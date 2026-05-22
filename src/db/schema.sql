@@ -1,5 +1,8 @@
 -- CodeGraph SQLite Schema
--- Version 1
+-- This file is the full current schema (applied verbatim to fresh databases).
+-- Existing databases are upgraded incrementally by src/db/migrations.ts —
+-- every change here must have a matching migration entry there.
+-- Current schema version: 5 (see CURRENT_SCHEMA_VERSION in migrations.ts).
 
 -- Schema version tracking
 CREATE TABLE IF NOT EXISTS schema_versions (
@@ -37,6 +40,14 @@ CREATE TABLE IF NOT EXISTS nodes (
     is_abstract INTEGER DEFAULT 0,
     decorators TEXT, -- JSON array
     type_parameters TEXT, -- JSON array
+    -- Provenance / SCIP ownership (schema v5)
+    provenance TEXT DEFAULT 'tree-sitter',
+    scip_symbol TEXT,                       -- original SCIP symbol string (internal + external nodes)
+    scip_index_path TEXT,                   -- internal-symbol nodes only; NULL for external (ownership is in scip_external_refs)
+    -- Stale flags (schema v5): reserved here so upsertGraphEdge can clear them
+    -- uniformly; only P2's sync path ever sets them to 1.
+    stale INTEGER DEFAULT 0,
+    staleness_visible INTEGER DEFAULT 0,
     updated_at INTEGER NOT NULL
 );
 
@@ -49,7 +60,13 @@ CREATE TABLE IF NOT EXISTS edges (
     metadata TEXT, -- JSON object
     line INTEGER,
     col INTEGER,
-    provenance TEXT DEFAULT NULL,
+    provenance TEXT DEFAULT NULL,           -- primary (highest-priority) extractor
+    provenances TEXT,                       -- JSON array: every extractor that observed this edge (schema v5)
+    confidence REAL DEFAULT 0.7,            -- resolution confidence (schema v5)
+    subkind TEXT,                           -- edge subkind, e.g. 'di_binding' (schema v5)
+    -- Stale flags (schema v5): reserved here; only P2's sync path sets them to 1.
+    stale INTEGER DEFAULT 0,
+    staleness_visible INTEGER DEFAULT 0,
     FOREIGN KEY (source) REFERENCES nodes(id) ON DELETE CASCADE,
     FOREIGN KEY (target) REFERENCES nodes(id) ON DELETE CASCADE
 );
@@ -143,9 +160,55 @@ CREATE INDEX IF NOT EXISTS idx_unresolved_file_path ON unresolved_refs(file_path
 CREATE INDEX IF NOT EXISTS idx_unresolved_from_name ON unresolved_refs(from_node_id, reference_name);
 CREATE INDEX IF NOT EXISTS idx_edges_provenance ON edges(provenance);
 
+-- SCIP provenance indexes (schema v5)
+CREATE INDEX IF NOT EXISTS idx_nodes_provenance ON nodes(provenance);
+CREATE INDEX IF NOT EXISTS idx_nodes_scip_symbol ON nodes(scip_symbol) WHERE scip_symbol IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_nodes_scip_index ON nodes(scip_index_path) WHERE scip_index_path IS NOT NULL;
+
+-- Edge dedup unique index (schema v5): includes line/col so the same
+-- caller->callee at different source positions stays a distinct row.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_edges_dedup ON edges(
+    source, target, kind,
+    COALESCE(subkind, ''),
+    COALESCE(line, -1),
+    COALESCE(col, -1)
+);
+
 -- Project metadata for version/provenance tracking
 CREATE TABLE IF NOT EXISTS project_metadata (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL,
     updated_at INTEGER NOT NULL
 );
+
+-- =============================================================================
+-- SCIP ingestion tables (schema v5)
+-- =============================================================================
+
+-- One row per source file covered by an ingested .scip index.
+CREATE TABLE IF NOT EXISTS scip_documents (
+    source_file_path TEXT NOT NULL,
+    scip_index_path  TEXT NOT NULL,
+    source_hash      TEXT NOT NULL,
+    ingested_at      INTEGER NOT NULL,
+    PRIMARY KEY (source_file_path, scip_index_path)
+);
+CREATE INDEX IF NOT EXISTS idx_scip_documents_index ON scip_documents(scip_index_path);
+
+-- One row per .scip index ingestion; completed_at IS NULL means a crash mid-ingest.
+CREATE TABLE IF NOT EXISTS scip_ingestions (
+    scip_index_path  TEXT PRIMARY KEY,
+    started_at       INTEGER NOT NULL,
+    completed_at     INTEGER,
+    intended_files   TEXT                   -- JSON array, for crash recovery
+);
+
+-- Many-to-many ownership of globally-unique external SCIP nodes by .scip indexes.
+CREATE TABLE IF NOT EXISTS scip_external_refs (
+    scip_index_path  TEXT NOT NULL,
+    external_node_id TEXT NOT NULL,
+    PRIMARY KEY (scip_index_path, external_node_id),
+    FOREIGN KEY (external_node_id) REFERENCES nodes(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_scip_external_refs_index ON scip_external_refs(scip_index_path);
+CREATE INDEX IF NOT EXISTS idx_scip_external_refs_node ON scip_external_refs(external_node_id);

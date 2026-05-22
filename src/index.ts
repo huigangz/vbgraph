@@ -5,6 +5,7 @@
  * knowledge graph from any codebase.
  */
 
+import * as fs from 'fs';
 import * as path from 'path';
 import {
   CodeGraphConfig,
@@ -22,6 +23,7 @@ import {
   TaskContext,
   BuildContextOptions,
   FindRelevantContextOptions,
+  Language,
 } from './types';
 import { DatabaseConnection, getDatabasePath } from './db';
 import { QueryBuilder } from './db/queries';
@@ -31,6 +33,7 @@ import {
   createDirectory,
   removeDirectory,
   validateDirectory,
+  getCodeGraphDir,
 } from './directory';
 import {
   ExtractionOrchestrator,
@@ -39,7 +42,21 @@ import {
   SyncResult,
   extractFromSource,
   initGrammars,
+  loadGrammarsForLanguages,
+  isLanguageSupported,
+  scanDirectory,
 } from './extraction';
+import { detectLanguage } from './extraction/grammars';
+import {
+  ingestScipFile,
+  iterateScipDocuments,
+  runScipAutoSpawn,
+  MultiIndexConflictError,
+  writeScipFailureLedger,
+  classifyScipFailureMode,
+  type ScipFailure,
+  type EmptyDocumentFallback,
+} from './extraction/scip';
 import {
   ReferenceResolver,
   createResolver,
@@ -47,7 +64,7 @@ import {
 } from './resolution';
 import { GraphTraverser, GraphQueryManager } from './graph';
 import { ContextBuilder, createContextBuilder } from './context';
-import { Mutex, FileLock } from './utils';
+import { Mutex, FileLock, normalizePath } from './utils';
 import { FileWatcher, WatchOptions } from './sync';
 
 // Re-export types for consumers
@@ -118,6 +135,18 @@ export interface IndexOptions {
 
   /** Enable verbose logging (worker lifecycle, memory, timeouts) */
   verbose?: boolean;
+
+  /** Explicit pre-built `.scip` index paths to ingest (CI / cron). */
+  scip?: string[];
+
+  /** Detect installed SCIP indexers, spawn them, and ingest the output. */
+  scipAuto?: boolean;
+
+  /** Force Tier 0 (tree-sitter only) even if SCIP indexers are present. */
+  noScip?: boolean;
+
+  /** Restrict `--scip-auto` to this language subset (by language name). */
+  languages?: string[];
 }
 
 /**
@@ -276,6 +305,7 @@ export class CodeGraph {
     const queries = new QueryBuilder(db.getDb());
 
     const instance = new CodeGraph(db, queries, config, resolvedRoot);
+    instance.cleanupIncompleteIngestions();
 
     // Sync if requested
     if (options.sync) {
@@ -310,7 +340,9 @@ export class CodeGraph {
     const db = DatabaseConnection.open(dbPath);
     const queries = new QueryBuilder(db.getDb());
 
-    return new CodeGraph(db, queries, config, resolvedRoot);
+    const instance = new CodeGraph(db, queries, config, resolvedRoot);
+    instance.cleanupIncompleteIngestions();
+    return instance;
   }
 
   /**
@@ -318,6 +350,248 @@ export class CodeGraph {
    */
   static isInitialized(projectRoot: string): boolean {
     return isInitialized(path.resolve(projectRoot));
+  }
+
+  /**
+   * SCIP pre-pass for `indexAll`: resolve `.scip` sources (explicit `--scip`
+   * paths, config `scipSources`, and `--scip-auto` spawn output), ingest them,
+   * and return the set of repo-relative source files now covered by SCIP — the
+   * tree-sitter pass skips those (dual-backend dispatch).
+   *
+   * A **batch pre-scan** runs before any ingestion: it streams every explicit
+   * `.scip` (which surfaces corruption and overlapping coverage) so a
+   * `MultiIndexConflictError` or a corrupt explicit path aborts with the DB
+   * completely unchanged (ship gates 5 + 12a). Explicit coverage takes
+   * precedence over `--scip-auto`: an auto-spawned `.scip` whose files an
+   * explicit path already covers is skipped, not treated as a conflict. An
+   * auto-spawned `.scip` that fails degrades to tree-sitter via the ledger.
+   */
+  private async runScipPrePass(options: IndexOptions): Promise<ReadonlySet<string>> {
+    const covered = new Set<string>();
+    if (options.noScip) {
+      return covered;
+    }
+
+    const db = this.db.getDb();
+    const explicitPaths = [
+      ...new Set(
+        [...(options.scip ?? []), ...(this.config.scipSources?.files ?? [])].map((p) =>
+          path.resolve(this.projectRoot, p)
+        )
+      ),
+    ];
+
+    const autoMode = options.scipAuto ?? this.config.scipAuto ?? false;
+    const autoPaths: string[] = [];
+    const failures: ScipFailure[] = [];
+
+    if (autoMode) {
+      try {
+        const repoFiles = scanDirectory(this.projectRoot, this.config);
+        const languagesInRepo = new Set<Language>(
+          repoFiles.map((f) => detectLanguage(f))
+        );
+        const languageFilter =
+          options.languages && options.languages.length > 0
+            ? new Set(options.languages as Language[])
+            : undefined;
+        const spawnResult = await runScipAutoSpawn({
+          projectRoot: this.projectRoot,
+          codegraphDir: getCodeGraphDir(this.projectRoot),
+          languagesInRepo,
+          languageFilter,
+          disabledIndexers: new Set(this.config.disabledScipIndexers ?? []),
+        });
+        autoPaths.push(...spawnResult.scipPaths);
+        failures.push(...spawnResult.failures);
+      } catch (err) {
+        // Lock contention or detection failure — degrade to tree-sitter.
+        console.error(
+          `[codegraph] --scip-auto skipped: ${(err as Error).message}`
+        );
+      }
+    }
+
+    // --- Batch pre-scan (no DB mutation) ---------------------------------
+    // Existing coverage from prior runs — re-ingesting the same path is fine
+    // (STAGE B replaces it), so a clash only counts against a *different* path.
+    const coverageOwner = new Map<string, string>();
+    for (const row of db
+      .prepare('SELECT source_file_path, scip_index_path FROM scip_documents')
+      .all() as Array<{ source_file_path: string; scip_index_path: string }>) {
+      coverageOwner.set(normalizePath(row.source_file_path), row.scip_index_path);
+    }
+
+    // Languages of every SCIP-covered file — drives the grammar pre-load that
+    // makes the empty-document tree-sitter fallback usable (see below).
+    const coveredLanguages = new Set<Language>();
+
+    // Explicit paths: a conflict or a corrupt file here is fatal. Streaming
+    // throws on corruption, so a bad explicit path aborts before any ingest.
+    const explicitCoverage = new Set<string>();
+    for (const scipPath of explicitPaths) {
+      for await (const doc of iterateScipDocuments(scipPath)) {
+        const rel = normalizePath(doc.relativePath);
+        const owner = coverageOwner.get(rel);
+        if (owner && owner !== scipPath) {
+          throw new MultiIndexConflictError(rel, owner, scipPath);
+        }
+        coverageOwner.set(rel, scipPath);
+        explicitCoverage.add(rel);
+        coveredLanguages.add(detectLanguage(doc.relativePath));
+      }
+    }
+
+    // Auto paths vs explicit coverage:
+    //   - no overlap            -> ingest the auto artifact
+    //   - fully covered already -> skip it (explicit-over-auto precedence)
+    //   - partial overlap       -> fatal: the combination is ambiguous, and
+    //                              silently skipping the whole artifact would
+    //                              downgrade its non-overlapping files to
+    //                              tree-sitter without telling the user.
+    const acceptedAutoPaths: string[] = [];
+    for (const scipPath of new Set(autoPaths)) {
+      let overlapCount = 0;
+      let nonOverlapCount = 0;
+      const autoLanguages: Language[] = [];
+      try {
+        for await (const doc of iterateScipDocuments(scipPath)) {
+          if (explicitCoverage.has(normalizePath(doc.relativePath))) {
+            overlapCount++;
+          } else {
+            nonOverlapCount++;
+          }
+          autoLanguages.push(detectLanguage(doc.relativePath));
+        }
+      } catch (err) {
+        failures.push({
+          indexer: path.basename(scipPath, '.scip'),
+          language: 'unknown',
+          mode: classifyScipFailureMode(err),
+          fallback: 'tree-sitter',
+        });
+        continue;
+      }
+      if (overlapCount > 0 && nonOverlapCount > 0) {
+        throw new Error(
+          `Cannot combine pre-built --scip path with --scip-auto for ` +
+            `partially-overlapping coverage: ${path.basename(scipPath)} shares ` +
+            `${overlapCount} file(s) with an explicit --scip path and adds ` +
+            `${nonOverlapCount} more. Resolve the ambiguity — drop one, or make ` +
+            `their coverage disjoint.`
+        );
+      }
+      if (overlapCount > 0) {
+        console.error(
+          `[codegraph] --scip-auto: skipping ${path.basename(scipPath)} — ` +
+            `its coverage is fully provided by an explicit --scip path.`
+        );
+        continue;
+      }
+      acceptedAutoPaths.push(scipPath);
+      for (const lang of autoLanguages) {
+        coveredLanguages.add(lang);
+      }
+    }
+
+    // --- Empty-document tree-sitter fallback -----------------------------
+    // A SCIP document with zero occurrences for a real file (e.g. a build
+    // error on that one file) should still get a tree-sitter graph rather
+    // than an empty SCIP-covered slot the tree-sitter pass then skips.
+    // `persistScipIndex` does this via `extractFallback` — but the fallback
+    // runs synchronously inside the persister, so the grammars for the
+    // covered languages must be loaded into this process first.
+    const fallbackLanguages = [...coveredLanguages].filter(
+      (lang) => lang !== 'unknown' && lang !== 'external' && isLanguageSupported(lang)
+    );
+    if (fallbackLanguages.length > 0) {
+      await initGrammars();
+      await loadGrammarsForLanguages(fallbackLanguages);
+    }
+    const extractFallback: EmptyDocumentFallback = (absFilePath, relativePath) => {
+      try {
+        const content = fs.readFileSync(absFilePath, 'utf-8');
+        // Use the relative path for extraction so node `filePath`s match the
+        // rest of the graph; read the content from the resolved absolute path.
+        const extracted = extractFromSource(relativePath, content);
+        // Pass `unresolvedReferences` through too — the resolver pass turns
+        // them into call/import/type edges, so an empty-fallback file is
+        // indexed exactly like a normal tree-sitter file.
+        return {
+          nodes: extracted.nodes,
+          edges: extracted.edges,
+          unresolvedReferences: extracted.unresolvedReferences,
+        };
+      } catch {
+        return null;
+      }
+    };
+    const ingestOptions = {
+      db,
+      qb: this.queries,
+      extractFallback,
+      emptyFallbackThresholdBytes: this.config.emptyFallbackThresholdBytes,
+    };
+
+    // --- Ingest (pre-scan ruled out explicit conflicts and corruption) ---
+    for (const scipPath of explicitPaths) {
+      await ingestScipFile(scipPath, this.projectRoot, ingestOptions);
+    }
+    // Auto-spawned artifacts are CodeGraph's own output — any failure here
+    // (including a late conflict) degrades to tree-sitter rather than aborting.
+    for (const scipPath of acceptedAutoPaths) {
+      try {
+        await ingestScipFile(scipPath, this.projectRoot, ingestOptions);
+      } catch (err) {
+        failures.push({
+          indexer: path.basename(scipPath, '.scip'),
+          language: 'unknown',
+          mode: classifyScipFailureMode(err),
+          fallback: 'tree-sitter',
+        });
+      }
+    }
+
+    if (failures.length > 0) {
+      try {
+        writeScipFailureLedger(getCodeGraphDir(this.projectRoot), failures);
+      } catch {
+        /* the ledger is best-effort surfacing, never fatal */
+      }
+    }
+
+    const rows = db
+      .prepare('SELECT DISTINCT source_file_path FROM scip_documents')
+      .all() as Array<{ source_file_path: string }>;
+    for (const row of rows) {
+      covered.add(normalizePath(row.source_file_path));
+    }
+    return covered;
+  }
+
+  /**
+   * Garbage-collect SCIP ingestions left incomplete by a prior crash.
+   *
+   * A crash mid-ingest leaves an `scip_ingestions` row with `completed_at`
+   * NULL and a partially-mutated graph. This runs at `open()` / `openSync()`
+   * time (migrations have already run) and scoped-deletes that partial data.
+   * The cleanup is destructive, not restorative — SCIP coverage for the
+   * affected indexes must be regenerated (`codegraph index --scip` /
+   * `codegraph scip-refresh`).
+   */
+  private cleanupIncompleteIngestions(): void {
+    const incomplete = this.queries.getIncompleteScipIngestions();
+    if (incomplete.length === 0) {
+      return;
+    }
+    console.error(
+      `[codegraph] Found ${incomplete.length} incomplete SCIP ingestion(s) from a ` +
+        `prior crash. Cleaning up partial data; re-run 'codegraph index --scip' or ` +
+        `'codegraph scip-refresh' to restore SCIP coverage.`,
+    );
+    for (const scipIndexPath of incomplete) {
+      this.queries.cleanupIncompleteScipIngestion(scipIndexPath);
+    }
   }
 
   /**
@@ -380,13 +654,46 @@ export class CodeGraph {
         return { success: false, filesIndexed: 0, filesSkipped: 0, filesErrored: 0, nodesCreated: 0, edgesCreated: 0, errors: [{ message: 'Could not acquire file lock - another process may be indexing', severity: 'error' as const }], durationMs: 0 };
       }
       try {
-        const result = await this.orchestrator.indexAll(options.onProgress, options.signal, options.verbose);
+        // SCIP pre-pass: ingest .scip backends, then exclude their files from
+        // the tree-sitter pass (dual-backend dispatch).
+        let scipCoveredFiles: ReadonlySet<string>;
+        try {
+          scipCoveredFiles = await this.runScipPrePass(options);
+        } catch (err) {
+          // A caller-supplied `--scip <path>` that is corrupt, or a
+          // MultiIndexConflictError, is fatal — but the persister's STAGE A
+          // pre-scan ran before any mutation, so the DB is unchanged.
+          return {
+            success: false,
+            filesIndexed: 0,
+            filesSkipped: 0,
+            filesErrored: 0,
+            nodesCreated: 0,
+            edgesCreated: 0,
+            errors: [
+              {
+                message: `SCIP ingestion failed: ${(err as Error).message}`,
+                severity: 'error' as const,
+              },
+            ],
+            durationMs: 0,
+          };
+        }
 
-        // Resolve references to create call/import/extends edges
-        if (result.success && result.filesIndexed > 0) {
-          // Get count without loading all refs into memory
-          const unresolvedCount = this.queries.getUnresolvedReferencesCount();
+        const result = await this.orchestrator.indexAll(
+          options.onProgress,
+          options.signal,
+          options.verbose,
+          scipCoveredFiles
+        );
 
+        // Resolve references to create call/import/extends edges. Gate on the
+        // unresolved-ref count, not `filesIndexed`: the SCIP empty-document
+        // fallback inserts unresolved refs during `runScipPrePass`, so refs can
+        // exist even when the tree-sitter pass indexed zero files (every file
+        // SCIP-covered). `getUnresolvedReferencesCount` is a cheap COUNT(*).
+        const unresolvedCount = this.queries.getUnresolvedReferencesCount();
+        if (result.success && unresolvedCount > 0) {
           options.onProgress?.({
             phase: 'resolving',
             current: 0,

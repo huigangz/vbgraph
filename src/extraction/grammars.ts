@@ -10,7 +10,10 @@ import * as path from 'path';
 import { Parser, Language as WasmLanguage } from 'web-tree-sitter';
 import { Language } from '../types';
 
-export type GrammarLanguage = Exclude<Language, 'svelte' | 'vue' | 'liquid' | 'unknown'>;
+export type GrammarLanguage = Exclude<
+  Language,
+  'svelte' | 'vue' | 'liquid' | 'unknown' | 'external'
+>;
 
 /**
  * WASM filename map — maps each language to its .wasm grammar file
@@ -35,7 +38,19 @@ const WASM_GRAMMAR_FILES: Record<GrammarLanguage, string> = {
   dart: 'tree-sitter-dart.wasm',
   pascal: 'tree-sitter-pascal.wasm',
   scala: 'tree-sitter-scala.wasm',
+  vbnet: 'vbnet.wasm',
 };
+
+/**
+ * Languages whose `.wasm` grammar is committed under `extraction/wasm/` rather
+ * than provided by the `tree-sitter-wasms` package (which has no upstream
+ * entry for them). `loadGrammarsForLanguages` resolves these from `__dirname`.
+ */
+const SELF_HOSTED_WASM_LANGUAGES = new Set<GrammarLanguage>([
+  'pascal',
+  'scala',
+  'vbnet',
+]);
 
 /**
  * File extension to Language mapping
@@ -60,6 +75,7 @@ export const EXTENSION_MAP: Record<string, Language> = {
   '.hpp': 'cpp',
   '.hxx': 'cpp',
   '.cs': 'csharp',
+  '.vb': 'vbnet',
   '.php': 'php',
   '.rb': 'ruby',
   '.rake': 'ruby',
@@ -125,8 +141,9 @@ export async function loadGrammarsForLanguages(languages: Language[]): Promise<v
   for (const lang of toLoad) {
     const wasmFile = WASM_GRAMMAR_FILES[lang];
     try {
-      // Pascal and Scala ship their own WASMs (not in tree-sitter-wasms)
-      const wasmPath = (lang === 'pascal' || lang === 'scala')
+      // Some grammars ship their own WASM (committed under wasm/) because
+      // tree-sitter-wasms has no upstream entry for them.
+      const wasmPath = SELF_HOSTED_WASM_LANGUAGES.has(lang)
         ? path.join(__dirname, 'wasm', wasmFile)
         : require.resolve(`tree-sitter-wasms/out/${wasmFile}`);
       const language = await WasmLanguage.load(wasmPath);
@@ -291,6 +308,8 @@ export function getLanguageDisplayName(language: Language): string {
     liquid: 'Liquid',
     pascal: 'Pascal / Delphi',
     scala: 'Scala',
+    vbnet: 'VB.NET',
+    external: 'External',
     unknown: 'Unknown',
   };
   return names[language] || language;

@@ -339,6 +339,31 @@ function printIndexResult(clack: typeof import('@clack/prompts'), result: IndexR
 }
 
 /**
+ * After a Tier 0 (`codegraph index` with no SCIP flags) run, tell the user
+ * which uninstalled SCIP indexers would lift the repo's languages to
+ * compiler-grade precision. Best-effort — never fails the index.
+ */
+async function printScipUpgradeHints(
+  clack: typeof import('@clack/prompts'),
+  cg: { getFiles(): Array<{ language: string }> }
+): Promise<void> {
+  try {
+    const { detectInstalledScipIndexers, formatUninstalledIndexerHints } = await import(
+      '../extraction/scip/detect-indexers'
+    );
+    const detected = await detectInstalledScipIndexers();
+    const languagesInRepo = new Set(cg.getFiles().map((f) => f.language));
+    const hints = formatUninstalledIndexerHints(detected, languagesInRepo);
+    if (hints.length > 0) {
+      const body = [...hints, '', 'Then run: codegraph index --scip-auto'].join('\n');
+      clack.note(body, 'Compiler-grade precision available');
+    }
+  } catch {
+    /* hint output is best-effort — never fail the index over it */
+  }
+}
+
+/**
  * Write detailed error log to .codegraph/errors.log
  */
 function writeErrorLog(projectPath: string, errors: Array<{ message: string; filePath?: string; severity: string; code?: string }>): void {
@@ -521,8 +546,40 @@ program
   .option('-f, --force', 'Force full re-index even if already indexed')
   .option('-q, --quiet', 'Suppress progress output')
   .option('-v, --verbose', 'Show detailed worker lifecycle and memory info')
-  .action(async (pathArg: string | undefined, options: { force?: boolean; quiet?: boolean; verbose?: boolean }) => {
+  .option(
+    '--scip <path>',
+    'Ingest a pre-built .scip index for compiler-grade precision (repeatable)',
+    (value: string, previous: string[]) => [...previous, value],
+    [] as string[]
+  )
+  .option('--scip-auto', 'Detect installed SCIP indexers, spawn them, and ingest the output')
+  .option('--no-scip', 'Force Tier 0 (tree-sitter only), even if SCIP indexers are installed')
+  .option('--languages <list>', 'Restrict --scip-auto to a comma-separated language subset')
+  .action(async (
+    pathArg: string | undefined,
+    options: {
+      force?: boolean;
+      quiet?: boolean;
+      verbose?: boolean;
+      scip?: string[] | false;
+      scipAuto?: boolean;
+      languages?: string;
+    }
+  ) => {
     const projectPath = resolveProjectPath(pathArg);
+
+    // commander stores `--scip <path>` values and `--no-scip` under the same
+    // `scip` key: an array of paths, or `false` when `--no-scip` was passed.
+    const noScip = options.scip === false;
+    const scipPaths = Array.isArray(options.scip) ? options.scip : [];
+    const scipIndexOptions = {
+      scip: scipPaths.length > 0 ? scipPaths : undefined,
+      scipAuto: options.scipAuto,
+      noScip: noScip || undefined,
+      languages: options.languages
+        ? options.languages.split(',').map((s) => s.trim()).filter(Boolean)
+        : undefined,
+    };
 
     try {
       if (!isInitialized(projectPath)) {
@@ -537,7 +594,7 @@ program
       if (options.quiet) {
         // Quiet mode: no UI, just run
         if (options.force) cg.clear();
-        const result = await cg.indexAll();
+        const result = await cg.indexAll({ ...scipIndexOptions });
         if (!result.success) process.exit(1);
         cg.destroy();
         return;
@@ -555,6 +612,7 @@ program
 
       if (options.verbose) {
         result = await cg.indexAll({
+          ...scipIndexOptions,
           onProgress: createVerboseProgress(),
           verbose: true,
         });
@@ -562,6 +620,7 @@ program
         process.stdout.write(`${colors.dim}${getGlyphs().rail}${colors.reset}\n`);
         const progress = createShimmerProgress();
         result = await cg.indexAll({
+          ...scipIndexOptions,
           onProgress: progress.onProgress,
         });
         await progress.stop();
@@ -571,6 +630,12 @@ program
 
       if (!result.success) {
         process.exit(1);
+      }
+
+      // After a Tier 0 index (no SCIP requested), tell the user which SCIP
+      // indexers would lift the covered languages to compiler-grade precision.
+      if (result.success && !noScip && scipPaths.length === 0 && !options.scipAuto) {
+        await printScipUpgradeHints(clack, cg);
       }
 
       clack.outro('Done');
@@ -1291,6 +1356,88 @@ program
       cg.destroy();
     } catch (err) {
       error(`Affected analysis failed: ${err instanceof Error ? err.message : String(err)}`);
+      process.exit(1);
+    }
+  });
+
+/**
+ * codegraph parity --fixture <path>
+ */
+program
+  .command('parity')
+  .description('Compare the SCIP and tree-sitter graphs of a fixture (resolution parity)')
+  .requiredOption(
+    '--fixture <path>',
+    'Directory with source files and a committed .scip index',
+  )
+  .option('-j, --json', 'Output the parity report as JSON')
+  .action(async (options: { fixture: string; json?: boolean }) => {
+    const fixturePath = path.resolve(options.fixture);
+
+    try {
+      if (!fs.existsSync(fixturePath) || !fs.statSync(fixturePath).isDirectory()) {
+        error(`Fixture directory not found: ${fixturePath}`);
+        process.exit(1);
+      }
+
+      const { runParity } = await import('../parity');
+      const result = await runParity(fixturePath);
+      const { report } = result;
+
+      if (options.json) {
+        console.log(JSON.stringify(result, null, 2));
+        return;
+      }
+
+      const kinds = (fps: { kind: string }[]): string =>
+        [...new Set(fps.map((f) => f.kind))].sort().join(', ') || '(none)';
+
+      console.log(chalk.bold(`\nResolution parity — ${fixturePath}\n`));
+      console.log(`  SCIP index:      ${chalk.cyan(path.basename(result.scipPath))}`);
+      console.log(
+        `  Files compared:  ${result.files.length} ${chalk.dim(`(${result.files.join(', ')})`)}`,
+      );
+      console.log(
+        `  Edge rows:       SCIP ${chalk.cyan(String(result.scipEdgeCount))}` +
+          `  tree-sitter ${chalk.cyan(String(result.treeSitterEdgeCount))}`,
+      );
+      console.log();
+      console.log(
+        `  Fingerprints:    shared ${chalk.green(String(report.shared.length))}` +
+          `  SCIP-only ${chalk.cyan(String(report.scipOnly.length))}` +
+          `  tree-sitter-only ${chalk.yellow(String(report.treeSitterOnly.length))}`,
+      );
+      console.log(`  shared kinds:            ${chalk.dim(kinds(report.shared))}`);
+      console.log(
+        `  SCIP-only kinds:         ${chalk.dim(kinds(report.scipOnly))} ` +
+          chalk.dim('(compiler-grade uplift)'),
+      );
+      console.log(`  tree-sitter-only kinds:  ${chalk.dim(kinds(report.treeSitterOnly))}`);
+
+      // Shared fingerprints where tree-sitter under-counts SCIP's call sites.
+      const missed = report.rows.filter(
+        (r) => r.missedSites > 0 && r.treeSitterCallSites > 0,
+      );
+      if (missed.length > 0) {
+        console.log(
+          chalk.yellow(`\n  ${getGlyphs().warn} tree-sitter missed call sites:`),
+        );
+        for (const row of missed.slice(0, 20)) {
+          const fp = row.fingerprint;
+          console.log(
+            chalk.dim(
+              `     ${fp.sourceQualifiedName} -> ${fp.targetQualifiedName} (${fp.kind}): ` +
+                `${row.scipCallSites} SCIP / ${row.treeSitterCallSites} tree-sitter`,
+            ),
+          );
+        }
+        if (missed.length > 20) {
+          console.log(chalk.dim(`     ... and ${missed.length - 20} more`));
+        }
+      }
+      console.log();
+    } catch (err) {
+      error(`Parity run failed: ${err instanceof Error ? err.message : String(err)}`);
       process.exit(1);
     }
   });

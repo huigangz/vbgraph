@@ -106,6 +106,10 @@ export interface LanguageExtractor {
   fieldTypes?: string[];
   /** Node types that represent class properties (extracted as 'property' kind inside class bodies) */
   propertyTypes?: string[];
+  /** Node types that represent module declarations (extracted as 'module' kind, e.g. VB.NET) */
+  moduleTypes?: string[];
+  /** Node types that represent namespace declarations (extracted as 'namespace' kind) */
+  namespaceTypes?: string[];
 
   // --- Field name mappings ---
 

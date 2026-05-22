@@ -294,6 +294,17 @@ export class TreeSitterExtractor {
       this.extractClass(node);
       skipChildren = true;
     }
+    // Module declarations (e.g. VB.NET `Module ... End Module`) — class-like
+    // containers extracted with 'module' kind.
+    else if (this.extractor.moduleTypes?.includes(nodeType)) {
+      this.extractClass(node, 'module');
+      skipChildren = true;
+    }
+    // Namespace declarations — class-like containers extracted with 'namespace' kind.
+    else if (this.extractor.namespaceTypes?.includes(nodeType)) {
+      this.extractClass(node, 'namespace');
+      skipChildren = true;
+    }
     // Check for method declarations (only if not already handled by functionTypes)
     else if (this.extractor.methodTypes.includes(nodeType)) {
       this.extractMethod(node);
@@ -751,8 +762,12 @@ export class TreeSitterExtractor {
   private extractStruct(node: SyntaxNode): void {
     if (!this.extractor) return;
 
-    // Skip forward declarations and type references (no body = not a definition)
-    const body = getChildByField(node, this.extractor.bodyField);
+    // Skip forward declarations and type references (no body = not a definition).
+    // `resolveBody` lets languages whose declarations have no `body` field
+    // (VB.NET `structure_block` — members are direct children) opt in, the
+    // same way `extractEnum` / `extractClass` already do.
+    const body = this.extractor.resolveBody?.(node, this.extractor.bodyField)
+      ?? getChildByField(node, this.extractor.bodyField);
     if (!body) return;
 
     const name = extractName(node, this.source, this.extractor);
@@ -1715,6 +1730,19 @@ export class TreeSitterExtractor {
               column: target.startPosition.column,
             });
           }
+        }
+      }
+
+      // VB.NET `Inherits BaseType` — single class base, or multiple interface bases.
+      if (child.type === 'inherits_clause') {
+        for (const target of child.namedChildren) {
+          this.unresolvedReferences.push({
+            fromNodeId: classId,
+            referenceName: getNodeText(target, this.source),
+            referenceKind: 'extends',
+            line: target.startPosition.row + 1,
+            column: target.startPosition.column,
+          });
         }
       }
 

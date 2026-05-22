@@ -1,0 +1,34 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    P0.10 VB.NET validation fixture.
+
+    A minimal, self-contained VB.NET class library that exercises every
+    construct the SCIP ingestion plan calls out: Namespace, Module, Class,
+    Interface, Sub, Function, Property, Imports, Inherits, Implements, Friend,
+    Shared, and Sub New. `scip-dotnet index` is run against this project once
+    and the resulting `index.scip` is committed beside it, so the SCIP-path
+    tests run without requiring a .NET SDK installation.
+
+    Targets net8.0 (a widely-available LTS) rather than the SDK's bundled
+    framework so re-generating the `.scip` does not depend on a specific
+    machine. `dotnet restore` pulls the reference pack as needed.
+  -->
+  <PropertyGroup>
+    <OutputType>Library</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <RootNamespace>VbnetSample</RootNamespace>
+    <Nullable>disable</Nullable>
+    <OptionStrict>On</OptionStrict>
+    <OptionInfer>On</OptionInfer>
+    <!--
+      Suppress the SDK's auto-generated `obj/**/*.AssemblyInfo.vb` and
+      `*.AssemblyAttributes.vb` files. scip-dotnet indexes every `.vb` the
+      compiler sees, and those build-output files would otherwise leak
+      `obj\Debug\...` documents into the committed `index.scip`.
+    -->
+    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+    <GenerateTargetFrameworkAttribute>false</GenerateTargetFrameworkAttribute>
+  </PropertyGroup>
+
+</Project>

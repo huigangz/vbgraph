@@ -29,6 +29,8 @@ export const NODE_KINDS = [
   'field',
   'variable',
   'constant',
+  'constructor',
+  'event',
   'enum',
   'enum_member',
   'type_alias',
@@ -60,6 +62,22 @@ export type EdgeKind =
   | 'decorates';      // Decorator applied to symbol
 
 /**
+ * Which extractor / resolution stage produced a node or edge.
+ *
+ * `framework:${string}` covers every framework resolver (`framework:aspnet`,
+ * `framework:spring`, ...). Optional on `Node`/`Edge`; the absent value is
+ * treated as `'tree-sitter'`.
+ */
+export type GraphProvenance =
+  | 'tree-sitter'
+  | 'tree-sitter (scip-empty-fallback)'
+  | 'scope-resolved'
+  | 'scip'
+  | 'scip:external'
+  | 'heuristic'
+  | `framework:${string}`;
+
+/**
  * Supported programming languages. See NODE_KINDS for why this is a
  * runtime-iterable const array.
  */
@@ -85,6 +103,8 @@ export const LANGUAGES = [
   'liquid',
   'pascal',
   'scala',
+  'vbnet',
+  'external',
   'unknown',
 ] as const;
 
@@ -155,6 +175,19 @@ export interface Node {
   /** Generic type parameters */
   typeParameters?: string[];
 
+  /** Which extractor produced this node (defaults to `'tree-sitter'`). */
+  provenance?: GraphProvenance;
+
+  /** Original SCIP symbol string — set on SCIP-derived nodes only. */
+  scipSymbol?: string;
+
+  /**
+   * Path of the `.scip` index that owns this node. Set on internal SCIP
+   * nodes; NULL for external nodes (their ownership lives in
+   * `scip_external_refs`) and for non-SCIP nodes.
+   */
+  scipIndexPath?: string;
+
   /** When the node was last updated */
   updatedAt: number;
 }
@@ -181,8 +214,205 @@ export interface Edge {
   /** Column number where relationship occurs */
   column?: number;
 
-  /** How this edge was created */
-  provenance?: 'tree-sitter' | 'scip' | 'heuristic';
+  /**
+   * Primary (highest-priority) extractor that produced this edge.
+   * Defaults to `'tree-sitter'` when absent.
+   */
+  provenance?: GraphProvenance;
+
+  /**
+   * Audit trail: every extractor that has independently observed this exact
+   * edge fingerprint. Append-only; never shrinks. `provenance` above is the
+   * highest-priority member of this set.
+   */
+  provenances?: GraphProvenance[];
+
+  /** Resolution confidence in [0, 1]. */
+  confidence?: number;
+
+  /**
+   * Edge subkind, e.g. `'di_binding'` / `'config'` / `'convention'` for
+   * framework `references` edges. Free-form; does not extend `EdgeKind`.
+   */
+  subkind?: string;
+}
+
+// =============================================================================
+// Provenance ranking and edge position invariant
+// =============================================================================
+
+/**
+ * Confidence tier derived from `provenance` — a coarse, switchable view over
+ * the continuous `confidence` value. Computed, never stored.
+ */
+export type ConfidenceTier =
+  | 'compiler'
+  | 'syntactic'
+  | 'scope-resolved'
+  | 'inferred'
+  | 'ambiguous';
+
+/** Derive the coarse `ConfidenceTier` for a node/edge `provenance`. */
+export function deriveConfidenceTier(prov: GraphProvenance | undefined): ConfidenceTier {
+  if (prov === undefined) return 'ambiguous';
+  if (prov === 'scip' || prov === 'scip:external') return 'compiler';
+  if (prov === 'tree-sitter' || prov === 'tree-sitter (scip-empty-fallback)') {
+    return 'syntactic';
+  }
+  if (prov === 'scope-resolved') return 'scope-resolved';
+  if (prov === 'heuristic') return 'inferred';
+  if (prov.startsWith('framework:')) return 'inferred';
+  return 'ambiguous';
+}
+
+/** Fixed-rank provenances; `framework:*` is handled by the prefix check below. */
+const PROVENANCE_RANK: Readonly<Record<string, number>> = {
+  scip: 100,
+  'scip:external': 90,
+  'scope-resolved': 80,
+  'tree-sitter': 70,
+  // framework:* => 60
+  heuristic: 50,
+  'tree-sitter (scip-empty-fallback)': 40,
+};
+
+/** Priority of a provenance for "which extractor is primary". Higher wins. */
+export function provenanceRank(p: GraphProvenance): number {
+  if (p.startsWith('framework:')) return 60; // all framework:* are equal-priority peers
+  return PROVENANCE_RANK[p] ?? 0;
+}
+
+/**
+ * The highest-priority provenance in a set. Stable: among equal-priority
+ * peers (e.g. two `framework:*`), the first-occurring one wins.
+ */
+export function pickPrimaryProvenance(provs: GraphProvenance[]): GraphProvenance {
+  if (provs.length === 0) {
+    throw new Error('pickPrimaryProvenance: empty input');
+  }
+  return provs.reduce((best, p) => (provenanceRank(p) > provenanceRank(best) ? p : best));
+}
+
+/** Default `confidence` for an edge produced by a given provenance. */
+export function defaultConfidence(prov: GraphProvenance): number {
+  switch (prov) {
+    case 'scip':
+    case 'scip:external':
+      return 1.0;
+    case 'scope-resolved':
+      return 0.75;
+    case 'tree-sitter':
+    case 'tree-sitter (scip-empty-fallback)':
+      return 0.7;
+    case 'heuristic':
+      return 0.6;
+    default:
+      return prov.startsWith('framework:') ? 0.85 : 0.7;
+  }
+}
+
+/**
+ * `references` subkinds whose edges may legitimately carry no source
+ * line/column (framework convention edges declared in config, not at a
+ * source call site).
+ */
+export const REFERENCES_SUBKINDS_ALLOWING_NULL_POSITION = new Set<string>([
+  'di_binding',
+  'config',
+  'convention',
+]);
+
+/** Edge kinds that are pure symbol-to-symbol relations — never positioned. */
+const POSITION_FORBIDDEN_KINDS = new Set<EdgeKind>([
+  'contains',
+  'extends',
+  'type_of',
+  'returns',
+  'overrides',
+  'decorates',
+  'imports',
+  'exports',
+]);
+
+/** Edge kinds that may carry a position but do not require one. */
+const POSITION_OPTIONAL_KINDS = new Set<EdgeKind>(['instantiates', 'implements']);
+
+/** True when `edge` carries a full source position (both line and column). */
+function edgeHasLineAndColumn(edge: Edge): boolean {
+  return (
+    edge.line !== undefined &&
+    edge.line !== null &&
+    edge.column !== undefined &&
+    edge.column !== null
+  );
+}
+
+/** True when `edge` carries either a line or a column. */
+function edgeHasAnyPosition(edge: Edge): boolean {
+  return (
+    (edge.line !== undefined && edge.line !== null) ||
+    (edge.column !== undefined && edge.column !== null)
+  );
+}
+
+/**
+ * Strict three-tier edge line/column invariant check. Throws on violation.
+ * Used by the SCIP persister and framework augmenters on edges they produce,
+ * and by tests. `upsertGraphEdge` normalizes via `coerceEdgePosition` first,
+ * so a forbidden-kind edge never reaches a strict caller with a stray position.
+ *
+ * Positioned kinds (`calls`, non-whitelisted `references`) require **both**
+ * line and column; forbidden kinds must carry **neither**.
+ */
+export function validateEdgeLineColumn(edge: Edge): void {
+  if (edge.kind === 'calls') {
+    if (!edgeHasLineAndColumn(edge)) {
+      throw new Error(
+        `edge kind 'calls' requires a line and column (${edge.source} -> ${edge.target})`,
+      );
+    }
+    return;
+  }
+
+  if (edge.kind === 'references') {
+    if (edge.subkind && REFERENCES_SUBKINDS_ALLOWING_NULL_POSITION.has(edge.subkind)) {
+      return; // framework convention edge — null position allowed
+    }
+    if (!edgeHasLineAndColumn(edge)) {
+      throw new Error(
+        `edge kind 'references'` +
+          (edge.subkind ? ` subkind '${edge.subkind}'` : '') +
+          ` requires a line and column (${edge.source} -> ${edge.target})`,
+      );
+    }
+    return;
+  }
+
+  if (POSITION_OPTIONAL_KINDS.has(edge.kind)) {
+    return;
+  }
+
+  if (POSITION_FORBIDDEN_KINDS.has(edge.kind)) {
+    if (edgeHasAnyPosition(edge)) {
+      throw new Error(`edge kind '${edge.kind}' must not carry a line/column`);
+    }
+    return;
+  }
+}
+
+/**
+ * Normalize an edge's position before persistence: strip line/column from
+ * pure-relation kinds (which must never be positioned). Returns the input
+ * unchanged when nothing needs stripping. Non-throwing — the lenient
+ * counterpart to `validateEdgeLineColumn`, used by `upsertGraphEdge` so a
+ * stray position from a legacy extractor cannot abort an index.
+ */
+export function coerceEdgePosition(edge: Edge): Edge {
+  if (POSITION_FORBIDDEN_KINDS.has(edge.kind) && edgeHasAnyPosition(edge)) {
+    const { line: _line, column: _column, ...rest } = edge;
+    return rest;
+  }
+  return edge;
 }
 
 /**
@@ -487,6 +717,26 @@ export interface CodeGraphConfig {
     /** Node kind to assign */
     kind: NodeKind;
   }[];
+
+  /** Pre-built `.scip` index sources for explicit (`--scip`) ingestion. */
+  scipSources?: {
+    /** Explicit `.scip` file paths. */
+    files?: string[];
+    /** Glob for discovering `.scip` files (default `'./index.scip'`). */
+    glob?: string;
+  };
+
+  /**
+   * A SCIP document with zero occurrences but a source file larger than this
+   * many bytes falls back to tree-sitter extraction. Defaults to 200.
+   */
+  emptyFallbackThresholdBytes?: number;
+
+  /** When true, `codegraph index` auto-detects and spawns SCIP indexers. */
+  scipAuto?: boolean;
+
+  /** SCIP indexer names to skip in `--scip-auto` mode. */
+  disabledScipIndexers?: string[];
 }
 
 /**
@@ -518,6 +768,8 @@ export const DEFAULT_CONFIG: CodeGraphConfig = {
     '**/*.cxx',
     // C#
     '**/*.cs',
+    // VB.NET
+    '**/*.vb',
     // PHP
     '**/*.php',
     // Ruby

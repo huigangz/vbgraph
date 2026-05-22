@@ -6,7 +6,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { Node, UnresolvedReference, Edge } from '../types';
+import { Node, UnresolvedReference, Edge, Language, NodeKind } from '../types';
 import { QueryBuilder } from '../db/queries';
 import {
   UnresolvedRef,
@@ -20,6 +20,7 @@ import { matchReference } from './name-matcher';
 import { resolveViaImport, extractImportMappings, extractReExports } from './import-resolver';
 import { detectFrameworks } from './frameworks';
 import { loadProjectAliases, type AliasMap } from './path-aliases';
+import { buildScopeIndex, type ScopeIndex, type SymbolRef } from './scope-index';
 import { logDebug } from '../errors';
 import type { ReExport } from './types';
 
@@ -112,6 +113,53 @@ const PASCAL_BUILT_INS = new Set([
 ]);
 
 /**
+ * Languages the P0.5b scope-resolution pass runs for — the SCIP-priority set.
+ * Others (Go, Rust, Ruby, Kotlin, Scala) are deferred to P1: their file/class
+ * scope semantics differ enough (package scope, open classes) that a blanket
+ * file+class walk would mint wrong edges. The `ScopeIndex` itself is
+ * language-agnostic; only the *pass* is gated.
+ */
+const SCOPE_RESOLUTION_LANGUAGES: ReadonlySet<Language> = new Set<Language>([
+  'csharp',
+  'vbnet',
+  'java',
+  'python',
+  'typescript',
+  'tsx',
+]);
+
+/** Node kinds that act as a class-like scope enclosing a use site. */
+const CLASS_LIKE_KINDS: ReadonlySet<NodeKind> = new Set<NodeKind>([
+  'class',
+  'struct',
+  'interface',
+  'trait',
+  'protocol',
+  'module',
+]);
+
+/**
+ * Kinds a *file-scope* match may resolve to. Members (`method`, `field`,
+ * `property`, …) are deliberately excluded: a bare reference can only reach a
+ * member through *class* scope (where the enclosing class matched), never via
+ * file scope — file scope here is "every declaration in the file", which would
+ * otherwise let a bare call in one class wrongly bind to another class's
+ * method of the same name.
+ */
+const FILE_VISIBLE_KINDS: ReadonlySet<NodeKind> = new Set<NodeKind>([
+  'function',
+  'class',
+  'struct',
+  'interface',
+  'trait',
+  'protocol',
+  'enum',
+  'type_alias',
+  'namespace',
+  'module',
+]);
+
+/**
  * Reference Resolver
  *
  * Orchestrates reference resolution using multiple strategies.
@@ -131,6 +179,11 @@ export class ReferenceResolver {
   private knownNames: Set<string> | null = null; // all known symbol names for fast pre-filtering
   private knownFiles: Set<string> | null = null;
   private cachesWarmed = false;
+  // P0.5b scope-resolution pass. Built from the extracted `nodes` + `contains`
+  // graph in `warmCaches`; null until then. `enclosingClassCache` memoizes the
+  // class-ancestor walk — many refs share a `fromNodeId`.
+  private scopeIndex: ScopeIndex | null = null;
+  private enclosingClassCache: Map<string, string | undefined> = new Map();
   // tsconfig/jsconfig path-alias map. `undefined` = not yet computed,
   // `null` = computed and absent. Treated as immutable for the
   // resolver's lifetime; callers re-create the resolver if config changes.
@@ -165,6 +218,9 @@ export class ReferenceResolver {
     // Cache all distinct symbol names for fast pre-filtering (just strings, not full nodes)
     this.knownNames = new Set(this.queries.getAllNodeNames());
 
+    // P0.5b — scope index over the already-extracted nodes + `contains` graph.
+    this.scopeIndex = buildScopeIndex(this.queries);
+
     this.cachesWarmed = true;
   }
 
@@ -181,6 +237,8 @@ export class ReferenceResolver {
     this.qualifiedNameCache.clear();
     this.knownNames = null;
     this.knownFiles = null;
+    this.scopeIndex = null;
+    this.enclosingClassCache.clear();
     this.cachesWarmed = false;
   }
 
@@ -474,14 +532,23 @@ export class ReferenceResolver {
       }
     }
 
-    // Strategy 2: Try import-based resolution
+    // Strategy 2: Scope resolution (P0.5b). A bare name declared in the use
+    // site's own class or file IS its referent by language rules — more
+    // precise than the import/name-matcher heuristics, so it returns
+    // immediately. Only runs for the SCIP-priority languages.
+    const scopeResult = this.resolveViaScope(ref);
+    if (scopeResult) {
+      return scopeResult;
+    }
+
+    // Strategy 3: Try import-based resolution
     const importResult = resolveViaImport(ref, this.context);
     if (importResult) {
       if (importResult.confidence >= 0.9) return importResult;
       candidates.push(importResult);
     }
 
-    // Strategy 3: Try name matching
+    // Strategy 4: Try name matching
     const nameResult = matchReference(ref, this.context);
     if (nameResult) {
       candidates.push(nameResult);
@@ -493,6 +560,79 @@ export class ReferenceResolver {
     return candidates.reduce((best, curr) =>
       curr.confidence > best.confidence ? curr : best
     );
+  }
+
+  /**
+   * Qualified name of the class-like scope enclosing `fromNodeId`, walking up
+   * `contains` edges. Memoized — refs from the same method share a node id.
+   */
+  private enclosingClassQn(fromNodeId: string): string | undefined {
+    if (this.enclosingClassCache.has(fromNodeId)) {
+      return this.enclosingClassCache.get(fromNodeId);
+    }
+    let current: Node | null = this.queries.getNodeById(fromNodeId);
+    let result: string | undefined;
+    for (let depth = 0; current && depth < 32; depth++) {
+      if (CLASS_LIKE_KINDS.has(current.kind)) {
+        result = current.qualifiedName;
+        break;
+      }
+      const parents = this.queries.getIncomingEdges(current.id, ['contains']);
+      current = parents.length > 0 ? this.queries.getNodeById(parents[0]!.source) : null;
+    }
+    this.enclosingClassCache.set(fromNodeId, result);
+    return result;
+  }
+
+  /**
+   * P0.5b scope resolution — resolve a bare name against the use site's class
+   * scope (which shadows) then file scope. Returns null when the language is
+   * outside the SCIP-priority set, the name is qualified/dotted (the import
+   * resolver's job), or the match is absent or ambiguous.
+   */
+  private resolveViaScope(ref: UnresolvedRef): ResolvedRef | null {
+    if (!this.scopeIndex) return null;
+    if (!SCOPE_RESOLUTION_LANGUAGES.has(ref.language)) return null;
+    if (ref.referenceKind === 'imports') return null;
+    if (!ref.filePath) return null;
+
+    const name = ref.referenceName;
+    // Scope resolution handles bare identifiers; dotted / qualified / path-like
+    // names are left to the import resolver and name-matcher.
+    if (name.includes('.') || name.includes('::') || name.includes('/')) {
+      return null;
+    }
+
+    /** Single unambiguous match, or 'ambiguous', or null. */
+    const pick = (
+      refs: SymbolRef[],
+      allowed?: ReadonlySet<NodeKind>,
+    ): SymbolRef | 'ambiguous' | null => {
+      const matches = refs.filter(
+        (r) =>
+          r.name === name &&
+          r.nodeId !== ref.fromNodeId &&
+          (!allowed || allowed.has(r.kind)),
+      );
+      if (matches.length === 0) return null;
+      if (matches.length > 1) return 'ambiguous';
+      return matches[0]!;
+    };
+
+    // Class scope first — an enclosing class's member shadows file scope.
+    const enclosingClass = this.enclosingClassQn(ref.fromNodeId);
+    if (enclosingClass) {
+      const inClass = pick(this.scopeIndex.classScope(enclosingClass));
+      if (inClass === 'ambiguous') return null;
+      if (inClass) {
+        return { original: ref, targetNodeId: inClass.nodeId, confidence: 0.75, resolvedBy: 'scope' };
+      }
+    }
+
+    // File scope — restricted to file-visible kinds (see FILE_VISIBLE_KINDS).
+    const inFile = pick(this.scopeIndex.fileScope(ref.filePath), FILE_VISIBLE_KINDS);
+    if (inFile === 'ambiguous' || inFile === null) return null;
+    return { original: ref, targetNodeId: inFile.nodeId, confidence: 0.75, resolvedBy: 'scope' };
   }
 
   /**
@@ -525,7 +665,7 @@ export class ReferenceResolver {
         }
       }
 
-      return {
+      const edge: Edge = {
         source: ref.original.fromNodeId,
         target: ref.targetNodeId,
         kind,
@@ -536,6 +676,15 @@ export class ReferenceResolver {
           resolvedBy: ref.resolvedBy,
         },
       };
+
+      // P0.5b — scope-resolved edges carry the `scope-resolved` provenance and
+      // its confidence so `upsertGraphEdge` ranks them above heuristic edges.
+      if (ref.resolvedBy === 'scope') {
+        edge.provenance = 'scope-resolved';
+        edge.confidence = ref.confidence;
+      }
+
+      return edge;
     });
   }
 

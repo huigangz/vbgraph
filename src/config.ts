@@ -7,7 +7,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import picomatch from 'picomatch';
-import { CodeGraphConfig, DEFAULT_CONFIG, Language, NodeKind } from './types';
+import { CodeGraphConfig, DEFAULT_CONFIG, LANGUAGES, NodeKind } from './types';
 import { normalizePath } from './utils';
 
 /**
@@ -72,18 +72,9 @@ export function validateConfig(config: unknown): config is CodeGraphConfig {
   if (!c.include.every((p) => typeof p === 'string')) return false;
   if (!c.exclude.every((p) => typeof p === 'string')) return false;
 
-  // Validate languages
-  const validLanguages: Language[] = [
-    'typescript',
-    'javascript',
-    'python',
-    'go',
-    'rust',
-    'java',
-    'svelte',
-    'unknown',
-  ];
-  if (!c.languages.every((l) => validLanguages.includes(l as Language))) return false;
+  // Validate languages against the canonical LANGUAGES list (single source of truth).
+  if (!c.languages.every((l) => (LANGUAGES as readonly string[]).includes(l as string)))
+    return false;
 
   // Validate frameworks
   for (const fw of c.frameworks) {
@@ -128,6 +119,13 @@ function mergeConfig(
     extractDocstrings: overrides.extractDocstrings ?? defaults.extractDocstrings,
     trackCallSites: overrides.trackCallSites ?? defaults.trackCallSites,
     customPatterns: overrides.customPatterns ?? defaults.customPatterns,
+    // SCIP configuration — carried through so project-level SCIP defaults in
+    // .codegraph/config.json are not silently dropped on load.
+    scipSources: overrides.scipSources ?? defaults.scipSources,
+    emptyFallbackThresholdBytes:
+      overrides.emptyFallbackThresholdBytes ?? defaults.emptyFallbackThresholdBytes,
+    scipAuto: overrides.scipAuto ?? defaults.scipAuto,
+    disabledScipIndexers: overrides.disabledScipIndexers ?? defaults.disabledScipIndexers,
   };
 }
 

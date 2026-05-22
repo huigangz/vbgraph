@@ -15,7 +15,7 @@
   "scripts": {
     "build": "tsc && npm run copy-assets && node -e \"require('fs').chmodSync('dist/bin/codegraph.js', 0o755)\"",
     "preuninstall": "node dist/bin/uninstall.js",
-    "copy-assets": "node -e \"const fs=require('fs');fs.mkdirSync('dist/db',{recursive:true});fs.copyFileSync('src/db/schema.sql','dist/db/schema.sql');fs.mkdirSync('dist/extraction/wasm',{recursive:true});fs.readdirSync('src/extraction/wasm').filter(f=>f.endsWith('.wasm')).forEach(f=>fs.copyFileSync('src/extraction/wasm/'+f,'dist/extraction/wasm/'+f))\"",
+    "copy-assets": "node -e \"const fs=require('fs');fs.mkdirSync('dist/db',{recursive:true});fs.copyFileSync('src/db/schema.sql','dist/db/schema.sql');fs.mkdirSync('dist/extraction/wasm',{recursive:true});fs.readdirSync('src/extraction/wasm').filter(f=>f.endsWith('.wasm')).forEach(f=>fs.copyFileSync('src/extraction/wasm/'+f,'dist/extraction/wasm/'+f));fs.mkdirSync('dist/extraction/scip',{recursive:true});fs.copyFileSync('src/extraction/scip/scip.proto','dist/extraction/scip/scip.proto')\"",
     "dev": "tsc --watch",
     "cli": "npm run build && node dist/bin/codegraph.js",
     "test": "vitest run",
@@ -39,19 +39,22 @@
     "jsonc-parser": "^3.3.1",
     "node-sqlite3-wasm": "^0.8.30",
     "picomatch": "^4.0.3",
+    "protobufjs": "^7.6.0",
     "sisteransi": "^1.0.5",
     "tree-sitter-wasms": "^0.1.11",
-    "web-tree-sitter": "^0.25.3"
+    "web-tree-sitter": "^0.25.3",
+    "which": "^4.0.0"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.0",
     "@types/node": "^20.19.30",
     "@types/picomatch": "^4.0.2",
+    "@types/which": "^3.0.4",
     "typescript": "^5.0.0",
     "vitest": "^2.1.9"
   },
   "optionalDependencies": {
-    "better-sqlite3": "^11.0.0"
+    "better-sqlite3": "^11.10.0"
   },
   "engines": {
     "node": ">=18.0.0 <25.0.0"

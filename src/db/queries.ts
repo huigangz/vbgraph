@@ -13,9 +13,13 @@ import {
   NodeKind,
   EdgeKind,
   Language,
+  GraphProvenance,
   GraphStats,
   SearchOptions,
   SearchResult,
+  pickPrimaryProvenance,
+  defaultConfidence,
+  coerceEdgePosition,
 } from '../types';
 import { safeJsonParse } from '../utils';
 import { kindBonus, nameMatchBonus, scorePathRelevance } from '../search/query-utils';
@@ -44,6 +48,9 @@ interface NodeRow {
   is_abstract: number;
   decorators: string | null;
   type_parameters: string | null;
+  provenance: string | null;
+  scip_symbol: string | null;
+  scip_index_path: string | null;
   updated_at: number;
 }
 
@@ -56,6 +63,9 @@ interface EdgeRow {
   line: number | null;
   col: number | null;
   provenance: string | null;
+  provenances: string | null;
+  confidence: number | null;
+  subkind: string | null;
 }
 
 interface FileRow {
@@ -105,6 +115,9 @@ function rowToNode(row: NodeRow): Node {
     isAbstract: row.is_abstract === 1,
     decorators: row.decorators ? safeJsonParse(row.decorators, undefined) : undefined,
     typeParameters: row.type_parameters ? safeJsonParse(row.type_parameters, undefined) : undefined,
+    provenance: row.provenance ? (row.provenance as GraphProvenance) : undefined,
+    scipSymbol: row.scip_symbol ?? undefined,
+    scipIndexPath: row.scip_index_path ?? undefined,
     updatedAt: row.updated_at,
   };
 }
@@ -120,7 +133,12 @@ function rowToEdge(row: EdgeRow): Edge {
     metadata: row.metadata ? safeJsonParse(row.metadata, undefined) : undefined,
     line: row.line ?? undefined,
     column: row.col ?? undefined,
-    provenance: row.provenance as Edge['provenance'],
+    provenance: row.provenance ? (row.provenance as GraphProvenance) : undefined,
+    provenances: row.provenances
+      ? safeJsonParse<GraphProvenance[]>(row.provenances, [])
+      : undefined,
+    confidence: row.confidence ?? undefined,
+    subkind: row.subkind ?? undefined,
   };
 }
 
@@ -160,6 +178,11 @@ export class QueryBuilder {
     getNodesByFile?: SqliteStatement;
     getNodesByKind?: SqliteStatement;
     insertEdge?: SqliteStatement;
+    upsertEdgeSelect?: SqliteStatement;
+    upsertEdgeUpdate?: SqliteStatement;
+    upsertEdgeInsert?: SqliteStatement;
+    insertNodeOrIgnore?: SqliteStatement;
+    insertExternalRef?: SqliteStatement;
     upsertFile?: SqliteStatement;
     deleteEdgesBySource?: SqliteStatement;
     deleteEdgesByTarget?: SqliteStatement;
@@ -201,13 +224,15 @@ export class QueryBuilder {
           start_line, end_line, start_column, end_column,
           docstring, signature, visibility,
           is_exported, is_async, is_static, is_abstract,
-          decorators, type_parameters, updated_at
+          decorators, type_parameters,
+          provenance, scip_symbol, scip_index_path, updated_at
         ) VALUES (
           @id, @kind, @name, @qualifiedName, @filePath, @language,
           @startLine, @endLine, @startColumn, @endColumn,
           @docstring, @signature, @visibility,
           @isExported, @isAsync, @isStatic, @isAbstract,
-          @decorators, @typeParameters, @updatedAt
+          @decorators, @typeParameters,
+          @provenance, @scipSymbol, @scipIndexPath, @updatedAt
         )
       `);
     }
@@ -245,6 +270,9 @@ export class QueryBuilder {
         isAbstract: node.isAbstract ? 1 : 0,
         decorators: node.decorators ? JSON.stringify(node.decorators) : null,
         typeParameters: node.typeParameters ? JSON.stringify(node.typeParameters) : null,
+        provenance: node.provenance ?? 'tree-sitter',
+        scipSymbol: node.scipSymbol ?? null,
+        scipIndexPath: node.scipIndexPath ?? null,
         updatedAt: node.updatedAt ?? Date.now(),
       });
     } catch (error) {
@@ -264,7 +292,11 @@ export class QueryBuilder {
   }
 
   /**
-   * Update an existing node
+   * Update an existing node.
+   *
+   * Deliberately does NOT touch `provenance` / `scip_symbol` / `scip_index_path`:
+   * those are set once at insert time. SCIP re-ingestion replaces ownership via
+   * the persister's scoped delete + re-insert, never through `updateNode`.
    */
   updateNode(node: Node): void {
     if (!this.stmts.updateNode) {
@@ -959,25 +991,98 @@ export class QueryBuilder {
   // ===========================================================================
 
   /**
-   * Insert a new edge
+   * Insert or merge an edge — the single edge-write path for every extractor
+   * (tree-sitter, SCIP, scope-resolver, framework augmenters).
+   *
+   * Edges are keyed by the `idx_edges_dedup` fingerprint
+   * `(source, target, kind, COALESCE(subkind,''), COALESCE(line,-1), COALESCE(col,-1))`.
+   * When an edge with that fingerprint already exists, the new contribution is
+   * merged: `provenances[]` gains the new extractor (append-only audit trail),
+   * `provenance` becomes the highest-priority member, `confidence` takes the
+   * max, `metadata` is shallow-merged (a NULL is written only when both sides
+   * are empty), and the freshness flags are reset — the freshness invariant
+   * that lets P2's stale-shadow loop terminate.
    */
-  insertEdge(edge: Edge): void {
-    if (!this.stmts.insertEdge) {
-      this.stmts.insertEdge = this.db.prepare(`
-        INSERT OR IGNORE INTO edges (source, target, kind, metadata, line, col, provenance)
-        VALUES (@source, @target, @kind, @metadata, @line, @col, @provenance)
+  upsertGraphEdge(rawEdge: Edge): void {
+    // Strip positions from pure-relation kinds so a stray legacy line/col
+    // cannot violate the three-tier invariant or split a fingerprint.
+    const edge = coerceEdgePosition(rawEdge);
+    const prov: GraphProvenance = edge.provenance ?? 'tree-sitter';
+    const conf = edge.confidence ?? defaultConfidence(prov);
+    const subkind = edge.subkind ?? null;
+    const line = edge.line ?? null;
+    const col = edge.column ?? null;
+
+    if (!this.stmts.upsertEdgeSelect) {
+      this.stmts.upsertEdgeSelect = this.db.prepare(`
+        SELECT provenance, provenances, confidence, metadata FROM edges
+        WHERE source=? AND target=? AND kind=?
+          AND COALESCE(subkind,'')=COALESCE(?,'')
+          AND COALESCE(line,-1)=COALESCE(?,-1)
+          AND COALESCE(col,-1)=COALESCE(?,-1)
       `);
     }
+    const existing = this.stmts.upsertEdgeSelect.get(
+      edge.source, edge.target, edge.kind, subkind, line, col,
+    ) as
+      | { provenance: string | null; provenances: string | null; confidence: number | null; metadata: string | null }
+      | undefined;
 
-    this.stmts.insertEdge.run({
-      source: edge.source,
-      target: edge.target,
-      kind: edge.kind,
-      metadata: edge.metadata ? JSON.stringify(edge.metadata) : null,
-      line: edge.line ?? null,
-      col: edge.column ?? null,
-      provenance: edge.provenance ?? null,
-    });
+    if (existing) {
+      const seed: GraphProvenance[] = existing.provenances
+        ? safeJsonParse<GraphProvenance[]>(existing.provenances, [])
+        : existing.provenance
+          ? [existing.provenance as GraphProvenance]
+          : [];
+      const provSet = new Set<GraphProvenance>(seed);
+      provSet.add(prov);
+      const provList = [...provSet];
+      const primary = pickPrimaryProvenance(provList);
+
+      const oldMeta = existing.metadata
+        ? safeJsonParse<Record<string, unknown>>(existing.metadata, {})
+        : {};
+      const mergedMeta = { ...oldMeta, ...(edge.metadata ?? {}) };
+      const metaJson =
+        Object.keys(mergedMeta).length > 0 ? JSON.stringify(mergedMeta) : null;
+
+      if (!this.stmts.upsertEdgeUpdate) {
+        this.stmts.upsertEdgeUpdate = this.db.prepare(`
+          UPDATE edges
+          SET provenance=?, provenances=?, confidence=max(COALESCE(confidence,0),?),
+              metadata=?, stale=0, staleness_visible=0
+          WHERE source=? AND target=? AND kind=?
+            AND COALESCE(subkind,'')=COALESCE(?,'')
+            AND COALESCE(line,-1)=COALESCE(?,-1)
+            AND COALESCE(col,-1)=COALESCE(?,-1)
+        `);
+      }
+      this.stmts.upsertEdgeUpdate.run(
+        primary, JSON.stringify(provList), conf, metaJson,
+        edge.source, edge.target, edge.kind, subkind, line, col,
+      );
+    } else {
+      if (!this.stmts.upsertEdgeInsert) {
+        this.stmts.upsertEdgeInsert = this.db.prepare(`
+          INSERT INTO edges
+            (source, target, kind, subkind, line, col, metadata, provenance, provenances, confidence)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `);
+      }
+      this.stmts.upsertEdgeInsert.run(
+        edge.source, edge.target, edge.kind, subkind, line, col,
+        edge.metadata ? JSON.stringify(edge.metadata) : null,
+        prov, JSON.stringify([prov]), conf,
+      );
+    }
+  }
+
+  /**
+   * Insert a new edge. Retained as the historical name — delegates to
+   * `upsertGraphEdge` so every legacy call site gets dedup + merge semantics.
+   */
+  insertEdge(edge: Edge): void {
+    this.upsertGraphEdge(edge);
   }
 
   /**
@@ -1065,6 +1170,182 @@ export class QueryBuilder {
 
     const rows = this.db.prepare(sql).all(...params) as EdgeRow[];
     return rows.map(rowToEdge);
+  }
+
+  /**
+   * Edges whose audit trail (`provenances[]`) contains `p` — i.e. every edge
+   * any run of extractor `p` has observed, regardless of which extractor is
+   * currently primary. Contrast `getOutgoingEdges(_, _, provenance)` which
+   * filters on the single-value primary column.
+   */
+  getEdgesByContributingProvenance(p: GraphProvenance): Edge[] {
+    const rows = this.db
+      .prepare(`SELECT * FROM edges WHERE provenances LIKE '%"' || ? || '"%'`)
+      .all(p) as EdgeRow[];
+    return rows.map(rowToEdge);
+  }
+
+  // ===========================================================================
+  // SCIP Operations
+  // ===========================================================================
+
+  /**
+   * Insert an internal SCIP-derived node. `INSERT OR IGNORE` — the node id is
+   * a stable hash of the SCIP symbol, so a (bug-induced) duplicate definition
+   * is a harmless no-op rather than a clobber.
+   */
+  insertScipNode(node: Node): void {
+    this.insertNodeOrIgnore(node);
+  }
+
+  /**
+   * Insert an external SCIP node (a symbol defined outside the index) and
+   * record this index's reference to it. Both inserts are `INSERT OR IGNORE`:
+   * external nodes are globally unique by symbol hash and shared many-to-many
+   * across `.scip` indexes via `scip_external_refs`.
+   */
+  upsertExternalScipNode(node: Node, scipIndexPath: string): void {
+    this.insertNodeOrIgnore(node);
+    if (!this.stmts.insertExternalRef) {
+      this.stmts.insertExternalRef = this.db.prepare(
+        `INSERT OR IGNORE INTO scip_external_refs (scip_index_path, external_node_id)
+         VALUES (?, ?)`,
+      );
+    }
+    this.stmts.insertExternalRef.run(scipIndexPath, node.id);
+  }
+
+  /** `INSERT OR IGNORE` a node row. Shared by internal + external SCIP inserts. */
+  private insertNodeOrIgnore(node: Node): void {
+    if (!this.stmts.insertNodeOrIgnore) {
+      this.stmts.insertNodeOrIgnore = this.db.prepare(`
+        INSERT OR IGNORE INTO nodes (
+          id, kind, name, qualified_name, file_path, language,
+          start_line, end_line, start_column, end_column,
+          docstring, signature, visibility,
+          is_exported, is_async, is_static, is_abstract,
+          decorators, type_parameters,
+          provenance, scip_symbol, scip_index_path, updated_at
+        ) VALUES (
+          @id, @kind, @name, @qualifiedName, @filePath, @language,
+          @startLine, @endLine, @startColumn, @endColumn,
+          @docstring, @signature, @visibility,
+          @isExported, @isAsync, @isStatic, @isAbstract,
+          @decorators, @typeParameters,
+          @provenance, @scipSymbol, @scipIndexPath, @updatedAt
+        )
+      `);
+    }
+    this.stmts.insertNodeOrIgnore.run({
+      id: node.id,
+      kind: node.kind,
+      name: node.name,
+      qualifiedName: node.qualifiedName ?? node.name,
+      filePath: node.filePath,
+      language: node.language,
+      startLine: node.startLine ?? 0,
+      endLine: node.endLine ?? 0,
+      startColumn: node.startColumn ?? 0,
+      endColumn: node.endColumn ?? 0,
+      docstring: node.docstring ?? null,
+      signature: node.signature ?? null,
+      visibility: node.visibility ?? null,
+      isExported: node.isExported ? 1 : 0,
+      isAsync: node.isAsync ? 1 : 0,
+      isStatic: node.isStatic ? 1 : 0,
+      isAbstract: node.isAbstract ? 1 : 0,
+      decorators: node.decorators ? JSON.stringify(node.decorators) : null,
+      typeParameters: node.typeParameters ? JSON.stringify(node.typeParameters) : null,
+      provenance: node.provenance ?? 'tree-sitter',
+      scipSymbol: node.scipSymbol ?? null,
+      scipIndexPath: node.scipIndexPath ?? null,
+      updatedAt: node.updatedAt ?? Date.now(),
+    });
+  }
+
+  /**
+   * Scoped delete of all data owned by one `.scip` index: its internal
+   * nodes/edges, its external references (garbage-collecting external nodes
+   * whose ref count drops to zero), its scip-empty-fallback nodes, and its
+   * `scip_documents` rows. The caller is responsible for the transaction.
+   */
+  deleteScipIndexData(scipIndexPath: string): void {
+    const p = { idx: scipIndexPath };
+
+    // Owned (internal) SCIP nodes/edges.
+    this.db
+      .prepare(
+        `DELETE FROM edges
+         WHERE source IN (SELECT id FROM nodes WHERE scip_index_path=@idx)
+            OR target IN (SELECT id FROM nodes WHERE scip_index_path=@idx)`,
+      )
+      .run(p);
+    this.db.prepare(`DELETE FROM nodes WHERE scip_index_path=@idx`).run(p);
+
+    // External refs owned by this index, then GC of now-orphaned external nodes.
+    // The per-endpoint orphan test asks "is THIS endpoint an external node with
+    // zero remaining refs" — internal endpoints never match the
+    // provenance='scip:external' filter, so a still-referenced external on the
+    // other end of an internal->external edge is never collateral-damaged.
+    this.db.prepare(`DELETE FROM scip_external_refs WHERE scip_index_path=@idx`).run(p);
+    const orphanExternal = `SELECT id FROM nodes
+        WHERE provenance='scip:external'
+          AND id NOT IN (SELECT external_node_id FROM scip_external_refs)`;
+    this.db
+      .prepare(
+        `DELETE FROM edges
+         WHERE source IN (${orphanExternal}) OR target IN (${orphanExternal})`,
+      )
+      .run();
+    this.db
+      .prepare(
+        `DELETE FROM nodes
+         WHERE provenance='scip:external'
+           AND id NOT IN (SELECT external_node_id FROM scip_external_refs)`,
+      )
+      .run();
+
+    // scip-empty-fallback nodes are file-path-associated, not scip_index_path-owned.
+    const fallbackNodes = `SELECT id FROM nodes
+        WHERE provenance='tree-sitter (scip-empty-fallback)'
+          AND file_path IN (SELECT source_file_path FROM scip_documents WHERE scip_index_path=@idx)`;
+    this.db
+      .prepare(
+        `DELETE FROM edges
+         WHERE source IN (${fallbackNodes}) OR target IN (${fallbackNodes})`,
+      )
+      .run(p);
+    this.db
+      .prepare(
+        `DELETE FROM nodes
+         WHERE provenance='tree-sitter (scip-empty-fallback)'
+           AND file_path IN (SELECT source_file_path FROM scip_documents WHERE scip_index_path=@idx)`,
+      )
+      .run(p);
+
+    this.db.prepare(`DELETE FROM scip_documents WHERE scip_index_path=@idx`).run(p);
+  }
+
+  /**
+   * Clean up a SCIP ingestion left incomplete by a crash: scoped-delete its
+   * partial data and drop the `scip_ingestions` row. Destructive, not
+   * restorative — the user must re-run the indexer to restore coverage.
+   */
+  cleanupIncompleteScipIngestion(scipIndexPath: string): void {
+    this.db.transaction(() => {
+      this.deleteScipIndexData(scipIndexPath);
+      this.db
+        .prepare(`DELETE FROM scip_ingestions WHERE scip_index_path=?`)
+        .run(scipIndexPath);
+    })();
+  }
+
+  /** `scip_index_path`s of ingestions that never completed (crash recovery). */
+  getIncompleteScipIngestions(): string[] {
+    const rows = this.db
+      .prepare(`SELECT scip_index_path FROM scip_ingestions WHERE completed_at IS NULL`)
+      .all() as Array<{ scip_index_path: string }>;
+    return rows.map((r) => r.scip_index_path);
   }
 
   // ===========================================================================
@@ -1440,7 +1721,13 @@ export class QueryBuilder {
   }
 
   /**
-   * Clear all data from the database
+   * Clear all graph data from the database.
+   *
+   * Wipes the SCIP bookkeeping tables (`scip_documents`, `scip_ingestions`,
+   * `scip_external_refs`) alongside the graph tables: they describe coverage
+   * that no longer exists once nodes/edges are gone. Leaving `scip_documents`
+   * behind would make a subsequent index treat those paths as SCIP-covered and
+   * skip them in the tree-sitter pass — silently un-indexing them.
    */
   clear(): void {
     this.nodeCache.clear();
@@ -1449,6 +1736,9 @@ export class QueryBuilder {
       this.db.exec('DELETE FROM edges');
       this.db.exec('DELETE FROM nodes');
       this.db.exec('DELETE FROM files');
+      this.db.exec('DELETE FROM scip_external_refs');
+      this.db.exec('DELETE FROM scip_documents');
+      this.db.exec('DELETE FROM scip_ingestions');
     })();
   }
 }

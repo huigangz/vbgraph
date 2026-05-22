@@ -484,7 +484,9 @@ export class ExtractionOrchestrator {
   async indexAll(
     onProgress?: (progress: IndexProgress) => void,
     signal?: AbortSignal,
-    verbose?: boolean
+    verbose?: boolean,
+    /** Repo-relative paths to skip — already covered by a SCIP backend. */
+    excludePaths?: ReadonlySet<string>
   ): Promise<IndexResult> {
     await initGrammars();
     const startTime = Date.now();
@@ -506,7 +508,7 @@ export class ExtractionOrchestrator {
       total: 0,
     });
 
-    const files = await scanDirectoryAsync(this.rootDir, this.config, (current, file) => {
+    let files = await scanDirectoryAsync(this.rootDir, this.config, (current, file) => {
       onProgress?.({
         phase: 'scanning',
         current,
@@ -522,6 +524,13 @@ export class ExtractionOrchestrator {
     // between runs is picked up without restarting the process.
     this.detectedFrameworkNames = null;
     const frameworkNames = this.ensureDetectedFrameworks(files);
+
+    // Drop files already covered by a SCIP backend — they were extracted at
+    // compiler-grade precision and must not be re-extracted by tree-sitter.
+    // Framework detection above intentionally still saw the full scan.
+    if (excludePaths && excludePaths.size > 0) {
+      files = files.filter((f) => !excludePaths.has(normalizePath(f)));
+    }
 
     if (signal?.aborted) {
       return {

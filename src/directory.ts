@@ -13,6 +13,32 @@ import * as path from 'path';
 export const CODEGRAPH_DIR = '.codegraph';
 
 /**
+ * Contents of `.codegraph/.gitignore`. Single source of truth — both
+ * `createDirectory` and `validateDirectory`'s auto-repair write this exact
+ * string, so the two paths cannot drift (e.g. one omitting `scip-cache/`).
+ */
+const CODEGRAPH_GITIGNORE = `# CodeGraph data files
+# These are local to each machine and should not be committed
+
+# Database
+*.db
+*.db-wal
+*.db-shm
+
+# Cache
+cache/
+
+# SCIP indexer artifacts (.scip files can be large; local to each machine)
+scip-cache/
+
+# Logs
+*.log
+
+# Hook markers
+.dirty
+`;
+
+/**
  * Get the .codegraph directory path for a project
  */
 export function getCodeGraphDir(projectRoot: string): string {
@@ -83,25 +109,7 @@ export function createDirectory(projectRoot: string): void {
   // Create .gitignore inside .codegraph (if it doesn't exist)
   const gitignorePath = path.join(codegraphDir, '.gitignore');
   if (!fs.existsSync(gitignorePath)) {
-    const gitignoreContent = `# CodeGraph data files
-# These are local to each machine and should not be committed
-
-# Database
-*.db
-*.db-wal
-*.db-shm
-
-# Cache
-cache/
-
-# Logs
-*.log
-
-# Hook markers
-.dirty
-`;
-
-    fs.writeFileSync(gitignorePath, gitignoreContent, 'utf-8');
+    fs.writeFileSync(gitignorePath, CODEGRAPH_GITIGNORE, 'utf-8');
   }
 }
 
@@ -245,8 +253,7 @@ export function validateDirectory(projectRoot: string): {
   const gitignorePath = path.join(codegraphDir, '.gitignore');
   if (!fs.existsSync(gitignorePath)) {
     try {
-      const gitignoreContent = `# CodeGraph data files\n# These are local to each machine and should not be committed\n\n# Database\n*.db\n*.db-wal\n*.db-shm\n\n# Cache\ncache/\n\n# Logs\n*.log\n\n# Hook markers\n.dirty\n`;
-      fs.writeFileSync(gitignorePath, gitignoreContent, 'utf-8');
+      fs.writeFileSync(gitignorePath, CODEGRAPH_GITIGNORE, 'utf-8');
     } catch {
       // Non-fatal: warn but don't block
       errors.push('.gitignore missing in .codegraph directory and could not be created');

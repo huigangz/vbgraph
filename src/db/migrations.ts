@@ -9,7 +9,7 @@ import { SqliteDatabase } from './sqlite-adapter';
 /**
  * Current schema version
  */
-export const CURRENT_SCHEMA_VERSION = 4;
+export const CURRENT_SCHEMA_VERSION = 5;
 
 /**
  * Migration definition
@@ -63,6 +63,84 @@ const migrations: Migration[] = [
         DROP INDEX IF EXISTS idx_edges_source;
         DROP INDEX IF EXISTS idx_edges_target;
       `);
+    },
+  },
+  {
+    version: 5,
+    description:
+      'SCIP ingestion: node/edge provenance columns, reserved stale flags, edge dedup unique index, scip_* tables',
+    up: (db) => {
+      // Provenance / SCIP-ownership columns on nodes.
+      db.exec(`
+        ALTER TABLE nodes ADD COLUMN provenance TEXT DEFAULT 'tree-sitter';
+        ALTER TABLE nodes ADD COLUMN scip_symbol TEXT;
+        ALTER TABLE nodes ADD COLUMN scip_index_path TEXT;
+        ALTER TABLE nodes ADD COLUMN stale INTEGER DEFAULT 0;
+        ALTER TABLE nodes ADD COLUMN staleness_visible INTEGER DEFAULT 0;
+      `);
+      // Edge extensions. `subkind` must exist before the dedup step below,
+      // which COALESCEs it.
+      db.exec(`
+        ALTER TABLE edges ADD COLUMN provenances TEXT;
+        ALTER TABLE edges ADD COLUMN confidence REAL DEFAULT 0.7;
+        ALTER TABLE edges ADD COLUMN subkind TEXT;
+        ALTER TABLE edges ADD COLUMN stale INTEGER DEFAULT 0;
+        ALTER TABLE edges ADD COLUMN staleness_visible INTEGER DEFAULT 0;
+      `);
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_nodes_provenance ON nodes(provenance);
+        CREATE INDEX IF NOT EXISTS idx_nodes_scip_symbol ON nodes(scip_symbol) WHERE scip_symbol IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS idx_nodes_scip_index ON nodes(scip_index_path) WHERE scip_index_path IS NOT NULL;
+      `);
+      // De-duplicate historical edges, keeping the newest (MAX rowid) row —
+      // most likely to carry up-to-date provenance/metadata — then enforce
+      // uniqueness on the call-site-preserving fingerprint.
+      db.exec(`
+        DELETE FROM edges WHERE rowid NOT IN (
+          SELECT MAX(rowid) FROM edges
+          GROUP BY source, target, kind,
+                   COALESCE(subkind, ''),
+                   COALESCE(line, -1),
+                   COALESCE(col, -1)
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_edges_dedup ON edges(
+          source, target, kind,
+          COALESCE(subkind, ''),
+          COALESCE(line, -1),
+          COALESCE(col, -1)
+        );
+      `);
+      // SCIP ingestion bookkeeping tables.
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS scip_documents (
+          source_file_path TEXT NOT NULL,
+          scip_index_path  TEXT NOT NULL,
+          source_hash      TEXT NOT NULL,
+          ingested_at      INTEGER NOT NULL,
+          PRIMARY KEY (source_file_path, scip_index_path)
+        );
+        CREATE INDEX IF NOT EXISTS idx_scip_documents_index ON scip_documents(scip_index_path);
+        CREATE TABLE IF NOT EXISTS scip_ingestions (
+          scip_index_path  TEXT PRIMARY KEY,
+          started_at       INTEGER NOT NULL,
+          completed_at     INTEGER,
+          intended_files   TEXT
+        );
+        CREATE TABLE IF NOT EXISTS scip_external_refs (
+          scip_index_path  TEXT NOT NULL,
+          external_node_id TEXT NOT NULL,
+          PRIMARY KEY (scip_index_path, external_node_id),
+          FOREIGN KEY (external_node_id) REFERENCES nodes(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_scip_external_refs_index ON scip_external_refs(scip_index_path);
+        CREATE INDEX IF NOT EXISTS idx_scip_external_refs_node ON scip_external_refs(external_node_id);
+      `);
+      // Existing edges keep their original provenances — scope-resolution is
+      // not back-filled (would require a full re-index). See plan P0.9.
+      console.error(
+        "[codegraph] Migrated DB to schema v5 (SCIP ingestion). Existing edges " +
+          "retain their original provenances; run 'codegraph index' to upgrade incrementally.",
+      );
     },
   },
 ];

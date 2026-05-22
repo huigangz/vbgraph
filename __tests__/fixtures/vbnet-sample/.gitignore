@@ -1,0 +1,4 @@
+# Build output from `dotnet build` / `scip-dotnet index`. The committed
+# artifact for the tests is index.scip — bin/ and obj/ are not needed.
+bin/
+obj/
