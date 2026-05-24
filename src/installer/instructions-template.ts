@@ -32,7 +32,7 @@ Use codegraph for **structural** questions — what calls what, what would break
 | Question | Tool |
 |---|---|
 | "How does X work? / trace X / explain a system / architecture" | \`codegraph_explore\` (seed with symbol names) |
-| "Where is X defined?" / "Find symbol named X" | \`codegraph_search\` |
+| "Where is X defined?" / "Find symbol named X" | \`codegraph_search\` (pass \`tag\` to narrow by framework role — e.g. \`tag: 'spring:service'\`, \`tag: 'react:hook'\`, \`tag: 'route-handler'\`) |
 | "What calls function Y?" | \`codegraph_callers\` |
 | "What does Y call?" | \`codegraph_callees\` |
 | "What would break if I changed Z?" | \`codegraph_impact\` |

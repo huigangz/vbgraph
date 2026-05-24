@@ -1,6 +1,50 @@
 import { describe, it, expect } from 'vitest';
 import type { FrameworkResolver, UnresolvedRef } from '../src/resolution/types';
-import type { Node } from '../src/types';
+import type { Edge, EdgeKind, Node, NodeKind } from '../src/types';
+import type { GraphView } from '../src/resolution/graph-view';
+import type { CommentLang } from '../src/resolution/strip-comments';
+import { stripCommentsForRegex } from '../src/resolution/strip-comments';
+
+/**
+ * In-memory `GraphView` for testing migrated resolvers' synthesize/augment
+ * hooks without standing up a SQLite DB. Pass a `{path: content}` map and
+ * the language to use for `readFileStripped`. Optional `nodes` and `edges`
+ * back the graph-side lookups.
+ */
+function makeStubGraphView(
+  files: Record<string, string>,
+  language: CommentLang,
+  options: { nodes?: Node[]; edges?: Edge[] } = {},
+): GraphView {
+  const nodes = options.nodes ?? [];
+  const edges = options.edges ?? [];
+  const nodesById = new Map(nodes.map((n) => [n.id, n]));
+  return {
+    getNode: (id) => nodesById.get(id) ?? null,
+    hasNode: (id) => nodesById.has(id),
+    getNodesByKind: (k: NodeKind) => nodes.filter((n) => n.kind === k),
+    getNodesByQualifiedName: (qn) => nodes.filter((n) => n.qualifiedName === qn),
+    getNodesByName: (name) => nodes.filter((n) => n.name === name),
+    getNodesByLowerName: (lower) => nodes.filter((n) => n.name.toLowerCase() === lower),
+    getNodesByFile: (p) => nodes.filter((n) => n.filePath === p),
+    getNodesByTag: () => [],
+    *getAllNodes() {
+      yield* nodes;
+    },
+    getOutgoingEdges: (id, kinds?: readonly EdgeKind[]) =>
+      edges.filter((e) => e.source === id && (!kinds || kinds.includes(e.kind))),
+    getIncomingEdges: (id, kinds?: readonly EdgeKind[]) =>
+      edges.filter((e) => e.target === id && (!kinds || kinds.includes(e.kind))),
+    getAllFiles: () => Object.keys(files),
+    fileExists: (p) => p in files,
+    readFile: (p) => files[p] ?? null,
+    readFileStripped: (p) => {
+      const raw = files[p];
+      return raw === undefined ? null : stripCommentsForRegex(raw, language);
+    },
+    getProjectRoot: () => '/',
+  };
+}
 
 describe('FrameworkResolver.extract interface', () => {
   it('extract() returns { nodes, references }', () => {
@@ -40,8 +84,8 @@ describe('getApplicableFrameworks', () => {
 
 import { djangoResolver } from '../src/resolution/frameworks/python';
 
-describe('djangoResolver.extract', () => {
-  it('extracts route node and reference for path() with CBV.as_view()', () => {
+describe('djangoResolver.synthesize', () => {
+  it('extracts route node for path() with CBV.as_view()', () => {
     const src = `
 from django.urls import path
 from users.views import UserListView
@@ -50,67 +94,68 @@ urlpatterns = [
     path('users/', UserListView.as_view(), name='user-list'),
 ]
 `;
-    const { nodes, references } = djangoResolver.extract!('users/urls.py', src);
+    const view = makeStubGraphView({ 'users/urls.py': src }, 'python');
+    const { nodes } = djangoResolver.synthesize!(view);
     expect(nodes).toHaveLength(1);
-    expect(nodes[0].kind).toBe('route');
-    expect(nodes[0].name).toBe('users/');
-    expect(references).toHaveLength(1);
-    expect(references[0].referenceName).toBe('UserListView');
-    expect(references[0].referenceKind).toBe('references');
-    expect(references[0].fromNodeId).toBe(nodes[0].id);
+    expect(nodes[0]!.kind).toBe('route');
+    expect(nodes[0]!.name).toBe('users/');
+    expect(nodes[0]!.provenance).toBe('framework:django');
   });
 
   it('extracts route for path() with dotted module.Class.as_view()', () => {
     const src = `from django.urls import path\nfrom api.v1 import views as api_v1_views\nurlpatterns = [path('api/', api_v1_views.UserListView.as_view())]\n`;
-    const { nodes, references } = djangoResolver.extract!('api/urls.py', src);
+    const view = makeStubGraphView({ 'api/urls.py': src }, 'python');
+    const { nodes } = djangoResolver.synthesize!(view);
     expect(nodes).toHaveLength(1);
-    expect(references[0].referenceName).toBe('UserListView');
+    expect(nodes[0]!.name).toBe('api/');
   });
 
   it('extracts route for path() with bare function view', () => {
     const src = `from django.urls import path\nurlpatterns = [path('home/', home_view, name='home')]\n`;
-    const { nodes, references } = djangoResolver.extract!('home/urls.py', src);
-    expect(references[0].referenceName).toBe('home_view');
+    const view = makeStubGraphView({ 'home/urls.py': src }, 'python');
+    const { nodes } = djangoResolver.synthesize!(view);
+    expect(nodes).toHaveLength(1);
+    expect(nodes[0]!.name).toBe('home/');
   });
 
   it('extracts route for path() with include()', () => {
     const src = `from django.urls import path, include\nurlpatterns = [path('api/', include('api.urls'))]\n`;
-    const { nodes, references } = djangoResolver.extract!('root/urls.py', src);
+    const view = makeStubGraphView({ 'root/urls.py': src }, 'python');
+    const { nodes } = djangoResolver.synthesize!(view);
     expect(nodes).toHaveLength(1);
-    expect(nodes[0].kind).toBe('route');
-    expect(references[0].referenceName).toBe('api.urls');
-    expect(references[0].referenceKind).toBe('imports');
+    expect(nodes[0]!.kind).toBe('route');
   });
 
   it('extracts routes for re_path and url', () => {
     const src = `from django.urls import re_path, url\nurlpatterns = [re_path(r'^users/$', UserView), url(r'^old/$', OldView)]\n`;
-    const { nodes } = djangoResolver.extract!('legacy/urls.py', src);
+    const view = makeStubGraphView({ 'legacy/urls.py': src }, 'python');
+    const { nodes } = djangoResolver.synthesize!(view);
     expect(nodes).toHaveLength(2);
-    expect(nodes.map(n => n.name)).toEqual(['^users/$', '^old/$']);
+    expect(nodes.map((n) => n.name)).toEqual(['^users/$', '^old/$']);
   });
 
   it('returns empty result for a non-urls.py python file', () => {
     const src = `def foo(): return 1\n`;
-    const { nodes, references } = djangoResolver.extract!('views.py', src);
+    const view = makeStubGraphView({ 'views.py': src }, 'python');
+    const { nodes } = djangoResolver.synthesize!(view);
     expect(nodes).toEqual([]);
-    expect(references).toEqual([]);
   });
 });
 
 import { flaskResolver, fastapiResolver } from '../src/resolution/frameworks/python';
 
-describe('flaskResolver.extract', () => {
-  it('extracts route and reference from @app.route', () => {
+describe('flaskResolver.synthesize', () => {
+  it('extracts route from @app.route', () => {
     const src = `
 @app.route('/users')
 def list_users():
     return []
 `;
-    const { nodes, references } = flaskResolver.extract!('app.py', src);
+    const view = makeStubGraphView({ 'app.py': src }, 'python');
+    const { nodes } = flaskResolver.synthesize!(view);
     expect(nodes).toHaveLength(1);
-    expect(nodes[0].kind).toBe('route');
-    expect(nodes[0].name).toBe('GET /users');
-    expect(references[0].referenceName).toBe('list_users');
+    expect(nodes[0]!.kind).toBe('route');
+    expect(nodes[0]!.name).toBe('GET /users');
   });
 
   it('extracts blueprint routes', () => {
@@ -119,22 +164,22 @@ def list_users():
 def create_user(id):
     pass
 `;
-    const { nodes, references } = flaskResolver.extract!('routes.py', src);
-    expect(nodes[0].name).toBe('POST /<id>');
-    expect(references[0].referenceName).toBe('create_user');
+    const view = makeStubGraphView({ 'routes.py': src }, 'python');
+    const { nodes } = flaskResolver.synthesize!(view);
+    expect(nodes[0]!.name).toBe('POST /<id>');
   });
 });
 
-describe('fastapiResolver.extract', () => {
-  it('extracts route and reference from @app.get', () => {
+describe('fastapiResolver.synthesize', () => {
+  it('extracts route from @app.get', () => {
     const src = `
 @app.get('/users')
 async def list_users():
     return []
 `;
-    const { nodes, references } = fastapiResolver.extract!('main.py', src);
-    expect(nodes[0].name).toBe('GET /users');
-    expect(references[0].referenceName).toBe('list_users');
+    const view = makeStubGraphView({ 'main.py': src }, 'python');
+    const { nodes } = fastapiResolver.synthesize!(view);
+    expect(nodes[0]!.name).toBe('GET /users');
   });
 
   it('extracts route from router.post', () => {
@@ -143,120 +188,131 @@ async def list_users():
 def create_item(item: Item):
     pass
 `;
-    const { nodes, references } = fastapiResolver.extract!('items.py', src);
-    expect(nodes[0].name).toBe('POST /items');
-    expect(references[0].referenceName).toBe('create_item');
+    const view = makeStubGraphView({ 'items.py': src }, 'python');
+    const { nodes } = fastapiResolver.synthesize!(view);
+    expect(nodes[0]!.name).toBe('POST /items');
   });
 });
 
 import { expressResolver } from '../src/resolution/frameworks/express';
 
-describe('expressResolver.extract', () => {
+describe('expressResolver.synthesize', () => {
   it('extracts route with inline handler reference', () => {
     const src = `app.get('/users', listUsers);\n`;
-    const { nodes, references } = expressResolver.extract!('routes.ts', src);
-    expect(nodes).toHaveLength(1);
-    expect(nodes[0].name).toBe('GET /users');
-    expect(references[0].referenceName).toBe('listUsers');
+    const view = makeStubGraphView({ 'routes.ts': src }, 'typescript');
+    const result = expressResolver.synthesize!(view);
+    expect(result.nodes).toHaveLength(1);
+    expect(result.nodes[0]!.name).toBe('GET /users');
+    expect(result.nodes[0]!.provenance).toBe('framework:express');
   });
 
   it('extracts route with router.post and middleware chain', () => {
     const src = `router.post('/items', auth, createItem);\n`;
-    const { nodes, references } = expressResolver.extract!('items.ts', src);
-    expect(nodes[0].name).toBe('POST /items');
-    // Multiple handlers: prefer the LAST one (convention: middleware first, handler last)
-    expect(references[0].referenceName).toBe('createItem');
+    const view = makeStubGraphView({ 'items.ts': src }, 'typescript');
+    const result = expressResolver.synthesize!(view);
+    expect(result.nodes[0]!.name).toBe('POST /items');
   });
 
   it('extracts route with controller method reference', () => {
     const src = `app.get('/x', userController.list);\n`;
-    const { nodes, references } = expressResolver.extract!('routes.ts', src);
-    expect(references[0].referenceName).toBe('list');
+    const view = makeStubGraphView({ 'routes.ts': src }, 'typescript');
+    const result = expressResolver.synthesize!(view);
+    expect(result.nodes).toHaveLength(1);
+    expect(result.nodes[0]!.name).toBe('GET /x');
   });
 });
 
 import { laravelResolver } from '../src/resolution/frameworks/laravel';
 
-describe('laravelResolver.extract', () => {
+describe('laravelResolver.synthesize', () => {
   it('extracts route with controller tuple syntax', () => {
     const src = `Route::get('/users', [UserController::class, 'index']);\n`;
-    const { nodes, references } = laravelResolver.extract!('routes/web.php', src);
-    expect(nodes[0].name).toBe('GET /users');
-    expect(references[0].referenceName).toBe('index');
+    const view = makeStubGraphView({ 'routes/web.php': src }, 'php');
+    const { nodes } = laravelResolver.synthesize!(view);
+    expect(nodes[0]!.name).toBe('GET /users');
+    expect(nodes[0]!.provenance).toBe('framework:laravel');
   });
 
   it('extracts route with Controller@action syntax', () => {
     const src = `Route::post('/users', 'UserController@store');\n`;
-    const { nodes, references } = laravelResolver.extract!('routes/web.php', src);
-    expect(references[0].referenceName).toBe('store');
+    const view = makeStubGraphView({ 'routes/web.php': src }, 'php');
+    const { nodes } = laravelResolver.synthesize!(view);
+    expect(nodes[0]!.name).toBe('POST /users');
   });
 
   it('extracts resource route', () => {
     const src = `Route::resource('users', UserController::class);\n`;
-    const { nodes, references } = laravelResolver.extract!('routes/web.php', src);
-    expect(nodes[0].kind).toBe('route');
-    expect(references[0].referenceName).toBe('UserController');
+    const view = makeStubGraphView({ 'routes/web.php': src }, 'php');
+    const { nodes } = laravelResolver.synthesize!(view);
+    expect(nodes[0]!.kind).toBe('route');
+    expect(nodes[0]!.name).toBe('resource:users');
   });
 });
 
 import { railsResolver } from '../src/resolution/frameworks/ruby';
 
-describe('railsResolver.extract', () => {
+describe('railsResolver.synthesize', () => {
   it('extracts route with controller#action syntax', () => {
     const src = `get '/users', to: 'users#index'\n`;
-    const { nodes, references } = railsResolver.extract!('config/routes.rb', src);
-    expect(nodes[0].name).toBe('GET /users');
-    expect(references[0].referenceName).toBe('index');
+    const view = makeStubGraphView({ 'config/routes.rb': src }, 'ruby');
+    const { nodes } = railsResolver.synthesize!(view);
+    expect(nodes[0]!.name).toBe('GET /users');
+    expect(nodes[0]!.provenance).toBe('framework:rails');
   });
 
   it('extracts route without to: keyword', () => {
     const src = `post '/items' => 'items#create'\n`;
-    const { nodes, references } = railsResolver.extract!('config/routes.rb', src);
-    expect(references[0].referenceName).toBe('create');
+    const view = makeStubGraphView({ 'config/routes.rb': src }, 'ruby');
+    const { nodes } = railsResolver.synthesize!(view);
+    expect(nodes[0]!.name).toBe('POST /items');
   });
 });
 
-import { springResolver } from '../src/resolution/frameworks/java';
+import { springCoreResolver } from '../src/resolution/frameworks/spring-core';
 
-describe('springResolver.extract', () => {
-  it('extracts route with @GetMapping and next method', () => {
+describe('springCoreResolver.synthesize', () => {
+  it('extracts route with @GetMapping', () => {
     const src = `
 @GetMapping("/users")
 public List<User> listUsers() {
   return users;
 }
 `;
-    const { nodes, references } = springResolver.extract!('UserController.java', src);
-    expect(nodes[0].name).toBe('GET /users');
-    expect(references[0].referenceName).toBe('listUsers');
+    const view = makeStubGraphView({ 'UserController.java': src }, 'java');
+    const { nodes } = springCoreResolver.synthesize!(view);
+    expect(nodes[0]!.name).toBe('GET /users');
+    expect(nodes[0]!.provenance).toBe('framework:spring-core');
   });
 });
 
 import { goResolver } from '../src/resolution/frameworks/go';
 
-describe('goResolver.extract', () => {
+describe('goResolver.synthesize', () => {
   it('extracts route from r.GET', () => {
     const src = `r.GET("/users", listUsers)\n`;
-    const { nodes, references } = goResolver.extract!('main.go', src);
-    expect(nodes[0].name).toBe('GET /users');
-    expect(references[0].referenceName).toBe('listUsers');
+    const view = makeStubGraphView({ 'main.go': src }, 'go');
+    const { nodes } = goResolver.synthesize!(view);
+    expect(nodes[0]!.name).toBe('GET /users');
+    expect(nodes[0]!.provenance).toBe('framework:go');
   });
 
   it('extracts route from router.HandleFunc', () => {
     const src = `router.HandleFunc("/items", createItem)\n`;
-    const { nodes, references } = goResolver.extract!('main.go', src);
-    expect(references[0].referenceName).toBe('createItem');
+    const view = makeStubGraphView({ 'main.go': src }, 'go');
+    const { nodes } = goResolver.synthesize!(view);
+    expect(nodes[0]!.name).toBe('ANY /items');
   });
 });
 
 import { rustResolver } from '../src/resolution/frameworks/rust';
 
-describe('rustResolver.extract', () => {
+describe('rustResolver.synthesize', () => {
   it('extracts route from axum .route with get()', () => {
     const src = `let app = Router::new().route("/users", get(list_users));\n`;
-    const { nodes, references } = rustResolver.extract!('main.rs', src);
-    expect(nodes[0].name).toBe('GET /users');
-    expect(references[0].referenceName).toBe('list_users');
+    const view = makeStubGraphView({ 'main.rs': src }, 'rust');
+    const { nodes } = rustResolver.synthesize!(view);
+    expect(nodes[0]!.name).toBe('GET /users');
+    expect(nodes[0]!.provenance).toBe('framework:rust');
   });
 });
 
@@ -569,7 +625,7 @@ version = "0.1.0"
 
 import { aspnetResolver } from '../src/resolution/frameworks/csharp';
 
-describe('aspnetResolver.extract', () => {
+describe('aspnetResolver.synthesize', () => {
   it('extracts route from [HttpGet] attribute', () => {
     const src = `
 [HttpGet("/users")]
@@ -578,42 +634,92 @@ public IActionResult ListUsers()
   return Ok();
 }
 `;
-    const { nodes, references } = aspnetResolver.extract!('UserController.cs', src);
-    expect(nodes[0].name).toBe('GET /users');
-    expect(references[0].referenceName).toBe('ListUsers');
+    const view = makeStubGraphView({ 'UserController.cs': src }, 'csharp');
+    const result = aspnetResolver.synthesize!(view);
+    expect(result.nodes[0]!.name).toBe('GET /users');
+    expect(result.nodes[0]!.provenance).toBe('framework:aspnet');
+    expect(result.nodes[0]!.kind).toBe('route');
+    expect(result.nodes[0]!.id.startsWith('framework:aspnet:')).toBe(true);
   });
 });
 
 import { vaporResolver } from '../src/resolution/frameworks/swift';
 
-describe('vaporResolver.extract', () => {
+describe('vaporResolver.synthesize', () => {
   it('extracts route from app.get with use:', () => {
     const src = `app.get("users", use: listUsers)\n`;
-    const { nodes, references } = vaporResolver.extract!('routes.swift', src);
-    expect(nodes[0].name).toBe('GET users');
-    expect(references[0].referenceName).toBe('listUsers');
+    const view = makeStubGraphView({ 'routes.swift': src }, 'swift');
+    const { nodes } = vaporResolver.synthesize!(view);
+    expect(nodes[0]!.name).toBe('GET users');
+    expect(nodes[0]!.provenance).toBe('framework:vapor');
   });
 });
 
 import { reactResolver } from '../src/resolution/frameworks/react';
 import { svelteResolver } from '../src/resolution/frameworks/svelte';
 
-describe('reactResolver.extract (smoke)', () => {
-  it('returns { nodes, references } shape', () => {
+describe('reactResolver.synthesize (smoke)', () => {
+  it('returns SynthesizeResult shape', () => {
     const src = `<Route path="/users" element={<UsersPage/>}/>`;
-    const result = reactResolver.extract!('App.tsx', src);
+    const view = makeStubGraphView({ 'App.tsx': src }, 'typescript');
+    const result = reactResolver.synthesize!(view);
     expect(result).toHaveProperty('nodes');
-    expect(result).toHaveProperty('references');
     expect(Array.isArray(result.nodes)).toBe(true);
-    expect(Array.isArray(result.references)).toBe(true);
+  });
+
+  it('emits component node for function component returning JSX', () => {
+    const src = `
+function MyButton() {
+  return <button>click</button>;
+}
+`;
+    const view = makeStubGraphView({ 'components/MyButton.tsx': src }, 'typescript');
+    const result = reactResolver.synthesize!(view);
+    const components = result.nodes.filter((n) => n.kind === 'component');
+    expect(components).toHaveLength(1);
+    expect(components[0]!.name).toBe('MyButton');
+    expect(components[0]!.provenance).toBe('framework:react');
+  });
+
+  it('emits react:hook tag on existing function named useFoo', () => {
+    const hook = {
+      id: 'fn:useFoo',
+      kind: 'function' as const,
+      name: 'useFoo',
+      qualifiedName: 'useFoo',
+      filePath: 'src/useFoo.ts',
+      language: 'typescript' as const,
+      startLine: 1,
+      endLine: 1,
+      startColumn: 0,
+      endColumn: 0,
+      updatedAt: 0,
+    };
+    const view = makeStubGraphView({}, 'typescript', { nodes: [hook] });
+    const result = reactResolver.synthesize!(view);
+    const tag = (result.tags ?? []).find((t) => t.nodeId === 'fn:useFoo');
+    expect(tag?.tags).toContain('react:hook');
   });
 });
 
-describe('svelteResolver.extract (smoke)', () => {
-  it('returns { nodes, references } shape', () => {
-    const result = svelteResolver.extract!('+page.svelte', '');
+describe('svelteResolver.synthesize (smoke)', () => {
+  it('returns SynthesizeResult shape', () => {
+    const view = makeStubGraphView({ '+page.svelte': '' }, 'javascript');
+    const result = svelteResolver.synthesize!(view);
     expect(result).toHaveProperty('nodes');
-    expect(result).toHaveProperty('references');
+    expect(Array.isArray(result.nodes)).toBe(true);
+  });
+
+  it('emits route node for src/routes/blog/[slug]/+page.svelte', () => {
+    const view = makeStubGraphView(
+      { 'src/routes/blog/[slug]/+page.svelte': '' },
+      'javascript',
+    );
+    const result = svelteResolver.synthesize!(view);
+    expect(result.nodes).toHaveLength(1);
+    expect(result.nodes[0]!.kind).toBe('route');
+    expect(result.nodes[0]!.name).toBe('/blog/:slug');
+    expect(result.nodes[0]!.provenance).toBe('framework:svelte');
   });
 });
 
@@ -631,9 +737,9 @@ Other routing example:
 """
 urlpatterns = [path('/real/', RealView.as_view())]
 `;
-    const result = djangoResolver.extract!('app/urls.py', src);
-    const urls = result.nodes.map((n) => n.name);
-    expect(urls).toEqual(['/real/']);
+    const view = makeStubGraphView({ 'app/urls.py': src }, 'python');
+    const { nodes } = djangoResolver.synthesize!(view);
+    expect(nodes.map((n) => n.name)).toEqual(['/real/']);
   });
 
   it('flask: skips commented-out @app.route', () => {
@@ -646,9 +752,9 @@ urlpatterns = [path('/real/', RealView.as_view())]
 def real_view():
     return ''
 `;
-    const { nodes, references } = flaskResolver.extract!('app.py', src);
+    const view = makeStubGraphView({ 'app.py': src }, 'python');
+    const { nodes } = flaskResolver.synthesize!(view);
     expect(nodes.map((n) => n.name)).toEqual(['GET /real']);
-    expect(references.map((r) => r.referenceName)).toEqual(['real_view']);
   });
 
   it('fastapi: skips docstring example routes', () => {
@@ -663,9 +769,9 @@ Example:
 async def real_handler():
     return {}
 `;
-    const { nodes, references } = fastapiResolver.extract!('main.py', src);
+    const view = makeStubGraphView({ 'main.py': src }, 'python');
+    const { nodes } = fastapiResolver.synthesize!(view);
     expect(nodes.map((n) => n.name)).toEqual(['GET /real']);
-    expect(references.map((r) => r.referenceName)).toEqual(['real_handler']);
   });
 
   it('express: skips // and /* */ commented routes', () => {
@@ -674,9 +780,9 @@ async def real_handler():
 /* router.post('/also-fake', otherHandler); */
 app.get('/real', realHandler);
 `;
-    const { nodes, references } = expressResolver.extract!('routes.ts', src);
-    expect(nodes.map((n) => n.name)).toEqual(['GET /real']);
-    expect(references.map((r) => r.referenceName)).toEqual(['realHandler']);
+    const view = makeStubGraphView({ 'routes.ts': src }, 'typescript');
+    const result = expressResolver.synthesize!(view);
+    expect(result.nodes.map((n) => n.name)).toEqual(['GET /real']);
   });
 
   it('laravel: skips // # and /* */ commented Route::* calls', () => {
@@ -686,9 +792,9 @@ app.get('/real', realHandler);
 /* Route::post('/another-fake', [X::class, 'y']); */
 Route::get('/real', [RealController::class, 'index']);
 `;
-    const { nodes, references } = laravelResolver.extract!('routes/web.php', src);
+    const view = makeStubGraphView({ 'routes/web.php': src }, 'php');
+    const { nodes } = laravelResolver.synthesize!(view);
     expect(nodes.map((n) => n.name)).toEqual(['GET /real']);
-    expect(references.map((r) => r.referenceName)).toEqual(['index']);
   });
 
   it('rails: skips =begin/=end and # commented routes', () => {
@@ -699,9 +805,9 @@ get '/also-fake', to: 'fake#show'
 =end
 get '/real', to: 'real#index'
 `;
-    const { nodes, references } = railsResolver.extract!('config/routes.rb', src);
+    const view = makeStubGraphView({ 'config/routes.rb': src }, 'ruby');
+    const { nodes } = railsResolver.synthesize!(view);
     expect(nodes.map((n) => n.name)).toEqual(['GET /real']);
-    expect(references.map((r) => r.referenceName)).toEqual(['index']);
   });
 
   it('spring: skips // and /* */ commented @GetMapping', () => {
@@ -715,9 +821,9 @@ get '/real', to: 'real#index'
 @GetMapping("/real")
 public List<User> listUsers() { return users; }
 `;
-    const { nodes, references } = springResolver.extract!('UserController.java', src);
+    const view = makeStubGraphView({ 'UserController.java': src }, 'java');
+    const { nodes } = springCoreResolver.synthesize!(view);
     expect(nodes.map((n) => n.name)).toEqual(['GET /real']);
-    expect(references.map((r) => r.referenceName)).toEqual(['listUsers']);
   });
 
   it('go: skips // and /* */ commented router.METHOD calls', () => {
@@ -726,9 +832,9 @@ public List<User> listUsers() { return users; }
 /* r.POST("/also-fake", anotherHandler) */
 r.GET("/real", listUsers)
 `;
-    const { nodes, references } = goResolver.extract!('main.go', src);
+    const view = makeStubGraphView({ 'main.go': src }, 'go');
+    const { nodes } = goResolver.synthesize!(view);
     expect(nodes.map((n) => n.name)).toEqual(['GET /real']);
-    expect(references.map((r) => r.referenceName)).toEqual(['listUsers']);
   });
 
   it('rust: skips // and nested /* */ commented .route() calls', () => {
@@ -737,9 +843,9 @@ r.GET("/real", listUsers)
 /* outer /* inner .route("/inner-fake", get(x)) */ still .route("/outer-fake", get(y)) */
 let app = Router::new().route("/real", get(list_users));
 `;
-    const { nodes, references } = rustResolver.extract!('main.rs', src);
+    const view = makeStubGraphView({ 'main.rs': src }, 'rust');
+    const { nodes } = rustResolver.synthesize!(view);
     expect(nodes.map((n) => n.name)).toEqual(['GET /real']);
-    expect(references.map((r) => r.referenceName)).toEqual(['list_users']);
   });
 
   it('aspnet: skips // and /* */ commented [HttpGet] attributes', () => {
@@ -753,9 +859,9 @@ let app = Router::new().route("/real", get(list_users));
 [HttpGet("/real")]
 public IActionResult ListUsers() { return Ok(); }
 `;
-    const { nodes, references } = aspnetResolver.extract!('UserController.cs', src);
-    expect(nodes.map((n) => n.name)).toEqual(['GET /real']);
-    expect(references.map((r) => r.referenceName)).toEqual(['ListUsers']);
+    const view = makeStubGraphView({ 'UserController.cs': src }, 'csharp');
+    const result = aspnetResolver.synthesize!(view);
+    expect(result.nodes.map((n) => n.name)).toEqual(['GET /real']);
   });
 
   it('vapor: skips // and /* */ commented app.METHOD calls', () => {
@@ -764,8 +870,8 @@ public IActionResult ListUsers() { return Ok(); }
 /* app.post("also-fake", use: anotherHandler) */
 app.get("real", use: listUsers)
 `;
-    const { nodes, references } = vaporResolver.extract!('routes.swift', src);
+    const view = makeStubGraphView({ 'routes.swift': src }, 'swift');
+    const { nodes } = vaporResolver.synthesize!(view);
     expect(nodes.map((n) => n.name)).toEqual(['GET real']);
-    expect(references.map((r) => r.referenceName)).toEqual(['listUsers']);
   });
 });

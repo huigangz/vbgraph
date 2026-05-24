@@ -23,10 +23,6 @@ import { LiquidExtractor } from './liquid-extractor';
 import { SvelteExtractor } from './svelte-extractor';
 import { DfmExtractor } from './dfm-extractor';
 import { VueExtractor } from './vue-extractor';
-import {
-  getAllFrameworkResolvers,
-  getApplicableFrameworks,
-} from '../resolution/frameworks';
 
 // Re-export for backward compatibility
 export { generateNodeId } from './tree-sitter-helpers';
@@ -2516,7 +2512,6 @@ export function extractFromSource(
   filePath: string,
   source: string,
   language?: Language,
-  frameworkNames?: string[]
 ): ExtractionResult {
   const detectedLanguage = language || detectLanguage(filePath, source);
   const fileExtension = path.extname(filePath).toLowerCase();
@@ -2547,30 +2542,11 @@ export function extractFromSource(
     result = extractor.extract();
   }
 
-  // Framework-specific extraction (routes, middleware, etc.)
-  if (frameworkNames && frameworkNames.length > 0) {
-    const allResolvers = getAllFrameworkResolvers();
-    const applicable = getApplicableFrameworks(
-      allResolvers.filter((r) => frameworkNames.includes(r.name)),
-      detectedLanguage
-    );
-    for (const fw of applicable) {
-      if (!fw.extract) continue;
-      try {
-        const fwResult = fw.extract(filePath, source);
-        result.nodes.push(...fwResult.nodes);
-        result.unresolvedReferences.push(...fwResult.references);
-      } catch (err) {
-        result.errors.push({
-          message: `Framework extractor '${fw.name}' failed: ${
-            err instanceof Error ? err.message : String(err)
-          }`,
-          filePath,
-          severity: 'warning',
-        });
-      }
-    }
-  }
+  // Framework-specific extraction was removed in PR-16. All framework
+  // resolvers now run as a project-level Phase 3 pass via
+  // `Phase3Orchestrator` (see src/resolution/phase3.ts) — routes,
+  // components, DI bindings, Temporal dispatch, etc. are all derived
+  // there after extraction completes.
 
   return result;
 }

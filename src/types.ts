@@ -583,6 +583,16 @@ export interface SearchOptions {
 
   /** Whether search is case-sensitive */
   caseSensitive?: boolean;
+
+  /**
+   * Restrict results to nodes carrying this Phase 3 tag (e.g.
+   * `spring:service`, `react:hook`, `route-handler`). Pushed into the
+   * candidate SQL so FTS / LIKE / fuzzy / filter-only paths all return
+   * at most `limit` already-tagged rows. Without this, post-filtering
+   * after the FTS limit cuts off tagged matches ranked below the
+   * window.
+   */
+  tag?: string;
 }
 
 /**

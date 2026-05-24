@@ -62,6 +62,7 @@ import {
   createResolver,
   ResolutionResult,
 } from './resolution';
+import { Phase3Orchestrator } from './resolution/phase3';
 import { GraphTraverser, GraphQueryManager } from './graph';
 import { ContextBuilder, createContextBuilder } from './context';
 import { Mutex, FileLock, normalizePath } from './utils';
@@ -709,6 +710,19 @@ export class CodeGraph {
           });
         }
 
+        // Phase 3 — framework synthesize/augment. UNCONDITIONAL on extraction
+        // success, OUTSIDE the resolution gate: tag-only and synthesize-only
+        // resolvers must run even when there are zero unresolved refs.
+        // STAGE 0 purge inside the orchestrator handles re-index of a
+        // populated DB.
+        if (result.success) {
+          const phase3 = new Phase3Orchestrator(this.projectRoot, this.queries);
+          const phase3Result = await phase3.run();
+          result.errors.push(...phase3Result.errors);
+          result.nodesCreated += phase3Result.nodesAdded;
+          result.edgesCreated += phase3Result.edgesAdded;
+        }
+
         return result;
       } finally {
         this.fileLock.release();
@@ -729,7 +743,23 @@ export class CodeGraph {
         return { success: false, filesIndexed: 0, filesSkipped: 0, filesErrored: 0, nodesCreated: 0, edgesCreated: 0, errors: [{ message: 'Could not acquire file lock - another process may be indexing', severity: 'error' as const }], durationMs: 0 };
       }
       try {
-        return this.orchestrator.indexFiles(filePaths);
+        const result = await this.orchestrator.indexFiles(filePaths);
+
+        // Phase 3 — UNCONDITIONAL when extraction succeeded. Without this,
+        // direct callers of `indexFiles()` would lose every Phase 3
+        // contribution (routes / components / tags / DI bindings) on the
+        // touched files. STAGE 0 purge inside the orchestrator handles the
+        // re-index case; the cost on a small file set is bounded by the
+        // framework_node_count / framework_edge_count for the whole project.
+        if (result.success) {
+          const phase3 = new Phase3Orchestrator(this.projectRoot, this.queries);
+          const phase3Result = await phase3.run();
+          result.errors.push(...phase3Result.errors);
+          result.nodesCreated += phase3Result.nodesAdded;
+          result.edgesCreated += phase3Result.edgesAdded;
+        }
+
+        return result;
       } finally {
         this.fileLock.release();
       }
@@ -789,6 +819,20 @@ export class CodeGraph {
             });
           }
         }
+
+        // Phase 3 — full recompute (STAGE 0 purge + re-synthesize). Runs
+        // UNCONDITIONALLY: a sync where no files changed can still leave
+        // stale framework facts behind (a previously-detecting resolver
+        // that no longer detects, or a merged-edge contribution that's no
+        // longer valid). Incremental Phase 3 sync is deferred to P2/P3.
+        const phase3 = new Phase3Orchestrator(this.projectRoot, this.queries);
+        const phase3Result = await phase3.run();
+        result.phase3 = {
+          nodesAdded: phase3Result.nodesAdded,
+          edgesAdded: phase3Result.edgesAdded,
+          tagsAdded: phase3Result.tagsAdded,
+          errors: phase3Result.errors,
+        };
 
         return result;
       } finally {
@@ -952,6 +996,26 @@ export class CodeGraph {
    */
   getNodesByKind(kind: Node['kind']): Node[] {
     return this.queries.getNodesByKind(kind);
+  }
+
+  /**
+   * Get all nodes carrying a Phase 3 tag (e.g. 'spring:service',
+   * 'react:hook', 'route-handler').
+   */
+  getNodesByTag(tag: string): Node[] {
+    return this.queries.getNodesByTag(tag);
+  }
+
+  /**
+   * For each `framework:<name>` provenance ever observed on an edge in the
+   * graph, return the count of edges in which that provenance contributes
+   * (counts membership in `provenances[]`, NOT primary `provenance`). Used by
+   * `codegraph status` to surface per-framework edge contributions including
+   * merged-edge cases where SCIP / tree-sitter is the primary provenance and
+   * a framework resolver is a non-primary contributor.
+   */
+  getFrameworkEdgeContributionCounts(): Record<string, number> {
+    return this.queries.getFrameworkEdgeContributionCounts();
   }
 
   /**

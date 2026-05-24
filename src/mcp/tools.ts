@@ -251,6 +251,10 @@ export const tools: ToolDefinition[] = [
           description: 'Filter by node kind',
           enum: ['function', 'method', 'class', 'interface', 'type', 'variable', 'route', 'component'],
         },
+        tag: {
+          type: 'string',
+          description: 'Filter by node tag (e.g. "spring:service", "react:hook", "route-handler"). Tags are emitted by Phase 3 framework resolvers.',
+        },
         limit: {
           type: 'number',
           description: 'Maximum results (default: 10)',
@@ -590,12 +594,21 @@ export class ToolHandler {
 
     const cg = this.getCodeGraph(args.projectPath as string | undefined);
     const kind = args.kind as string | undefined;
+    const tag = args.tag as string | undefined;
     const rawLimit = Number(args.limit) || 10;
     const limit = clamp(rawLimit, 1, 100);
 
+    // `tag` flows through to the SQL candidate query (FTS / LIKE / fuzzy
+    // / filter-only) as an `INNER JOIN node_tags`. The DB returns at
+    // most `limit` already-tagged rows, so tagged matches ranked
+    // outside an arbitrary FTS window aren't silently dropped. The
+    // earlier over-fetch+post-filter hack capped at 500 candidates,
+    // which still false-negatived on large repos with >500 untagged
+    // high-rank hits.
     const results = cg.searchNodes(query, {
       limit,
       kinds: kind ? [kind as NodeKind] : undefined,
+      tag,
     });
 
     if (results.length === 0) {

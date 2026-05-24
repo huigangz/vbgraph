@@ -1,12 +1,26 @@
 /**
- * Rust Framework Resolver
+ * Rust Framework Resolver — Phase 3 shape (with retained module resolution).
  *
- * Handles Actix-web, Rocket, Axum, and common Rust patterns.
+ * `extract` → `synthesize`: Actix/Rocket attribute routes + axum DSL.
+ * `resolve` PARTIALLY RETAINED: cargo-workspace crate-name → crate-root
+ * module resolution stays (load-bearing for cross-crate `imports`
+ * edges; tested in `__tests__/frameworks.test.ts` 'rustResolver.resolve
+ * cargo workspace crates'). The suffix-based by-name lookups
+ * (`*_handler`, `*Service`, PascalCase struct) are dropped — heuristic
+ * best-effort that import resolution covers better.
+ * `augment`: route→handler `references/convention` edges + tags.
  */
 
-import { Node } from '../../types';
-import { FrameworkResolver, UnresolvedRef, ResolvedRef, ResolutionContext } from '../types';
-import { stripCommentsForRegex } from '../strip-comments';
+import { Edge, Node } from '../../types';
+import {
+  AugmentResult,
+  FrameworkResolver,
+  ResolutionContext,
+  ResolvedRef,
+  SynthesizeResult,
+  UnresolvedRef,
+} from '../types';
+import { GraphView } from '../graph-view';
 import { getCargoWorkspaceCrateMap } from './cargo-workspace';
 
 const cargoWorkspaceMapCache = new WeakMap<ResolutionContext, Map<string, string>>();
@@ -19,192 +33,145 @@ function getCachedCargoWorkspaceCrateMap(context: ResolutionContext): Map<string
   return map;
 }
 
+const ATTR_REGEX =
+  /#\[(get|post|put|patch|delete|head|options)\s*\(\s*["']([^"']+)["'][^\]]*\)\]/g;
+const AXUM_REGEX =
+  /\.route\s*\(\s*"([^"]+)"\s*,\s*(get|post|put|patch|delete)\s*\(\s*(\w+)/g;
+
 export const rustResolver: FrameworkResolver = {
   name: 'rust',
   languages: ['rust'],
 
   detect(context: ResolutionContext): boolean {
-    // Check for Cargo.toml (Rust project signature)
     return context.fileExists('Cargo.toml');
   },
 
+  /**
+   * Retained for cargo-workspace module resolution. Module references
+   * (lowercase identifiers) try local `src/<name>.rs` / `src/<name>/mod.rs`
+   * and workspace member crate roots. Workspace hits are high-confidence
+   * (0.95) to beat name-matcher self-file matches.
+   */
   resolve(ref: UnresolvedRef, context: ResolutionContext): ResolvedRef | null {
-    // Pattern 1: Handler references
-    if (ref.referenceName.endsWith('_handler') || ref.referenceName.startsWith('handle_')) {
-      const result = resolveByNameAndKind(ref.referenceName, FUNCTION_KINDS, HANDLER_DIRS, context);
-      if (result) {
-        return {
-          original: ref,
-          targetNodeId: result,
-          confidence: 0.8,
-          resolvedBy: 'framework',
-        };
-      }
-    }
-
-    // Pattern 2: Service/Repository trait implementations
-    if (ref.referenceName.endsWith('Service') || ref.referenceName.endsWith('Repository')) {
-      const result = resolveByNameAndKind(ref.referenceName, SERVICE_KINDS, SERVICE_DIRS, context);
-      if (result) {
-        return {
-          original: ref,
-          targetNodeId: result,
-          confidence: 0.8,
-          resolvedBy: 'framework',
-        };
-      }
-    }
-
-    // Pattern 3: Struct references (PascalCase)
-    if (/^[A-Z][a-zA-Z]+$/.test(ref.referenceName)) {
-      const result = resolveByNameAndKind(ref.referenceName, STRUCT_KINDS, MODEL_DIRS, context);
-      if (result) {
-        return {
-          original: ref,
-          targetNodeId: result,
-          confidence: 0.7,
-          resolvedBy: 'framework',
-        };
-      }
-    }
-
-    // Pattern 4: Module references
-    if (/^[a-z_]+$/.test(ref.referenceName)) {
-      const result = resolveModule(ref.referenceName, context);
-      if (result) {
-        // Workspace-manifest hits are an exact crate-name -> crate-root
-        // mapping straight from Cargo.toml, so we trust them above
-        // name-matcher self-file matches (which otherwise win at 0.7
-        // because every file containing `use foo::...` has its own
-        // import node named `foo`).
-        return {
-          original: ref,
-          targetNodeId: result.targetId,
-          confidence: result.fromWorkspace ? 0.95 : 0.6,
-          resolvedBy: 'framework',
-        };
-      }
-    }
-
-    return null;
+    if (!/^[a-z_]+$/.test(ref.referenceName)) return null;
+    const result = resolveModule(ref.referenceName, context);
+    if (!result) return null;
+    return {
+      original: ref,
+      targetNodeId: result.targetId,
+      confidence: result.fromWorkspace ? 0.95 : 0.6,
+      resolvedBy: 'framework',
+    };
   },
 
-  extract(filePath, content) {
-    if (!filePath.endsWith('.rs')) return { nodes: [], references: [] };
+  synthesize(graph: GraphView): SynthesizeResult {
     const nodes: Node[] = [];
-    const references: UnresolvedRef[] = [];
     const now = Date.now();
-    const safe = stripCommentsForRegex(content, 'rust');
 
-    // Actix-web / Rocket attribute: #[get("/path")] fn handler(..)
-    // Capture the method, path, and the fn identifier that follows.
-    const attrRegex = /#\[(get|post|put|patch|delete|head|options)\s*\(\s*["']([^"']+)["'][^\]]*\)\]/g;
-    let match: RegExpExecArray | null;
-    while ((match = attrRegex.exec(safe)) !== null) {
-      const [, method, routePath] = match;
-      const line = safe.slice(0, match.index).split('\n').length;
-      const upper = method!.toUpperCase();
+    for (const file of graph.getAllFiles()) {
+      if (!file.endsWith('.rs')) continue;
+      const safe = graph.readFileStripped(file, 'rust');
+      if (!safe) continue;
 
-      const routeNode: Node = {
-        id: `route:${filePath}:${line}:${upper}:${routePath}`,
-        kind: 'route',
-        name: `${upper} ${routePath}`,
-        qualifiedName: `${filePath}::route:${routePath}`,
-        filePath,
-        startLine: line,
-        endLine: line,
-        startColumn: 0,
-        endColumn: match[0].length,
-        language: 'rust',
-        updatedAt: now,
-      };
-      nodes.push(routeNode);
-
-      const tail = safe.slice(match.index + match[0].length);
-      const fnMatch = tail.match(/\n\s*(?:pub\s+)?(?:async\s+)?fn\s+(\w+)/);
-      if (fnMatch) {
-        references.push({
-          fromNodeId: routeNode.id,
-          referenceName: fnMatch[1]!,
-          referenceKind: 'references',
-          line,
-          column: 0,
-          filePath,
+      // Actix-web / Rocket attribute: #[get("/path")] fn handler(..)
+      ATTR_REGEX.lastIndex = 0;
+      let match: RegExpExecArray | null;
+      while ((match = ATTR_REGEX.exec(safe)) !== null) {
+        const [, method, routePath] = match;
+        const line = safe.slice(0, match.index).split('\n').length;
+        const upper = method!.toUpperCase();
+        nodes.push({
+          id: `framework:rust:route-attr:${file}:${line}:${upper}:${routePath}`,
+          kind: 'route',
+          name: `${upper} ${routePath}`,
+          qualifiedName: `${file}::route:${routePath}`,
+          filePath: file,
+          startLine: line,
+          endLine: line,
+          startColumn: 0,
+          endColumn: match[0].length,
           language: 'rust',
+          provenance: 'framework:rust',
+          updatedAt: now,
+        });
+      }
+
+      // Axum: .route("/path", get(handler))
+      AXUM_REGEX.lastIndex = 0;
+      while ((match = AXUM_REGEX.exec(safe)) !== null) {
+        const [, routePath, method] = match;
+        const line = safe.slice(0, match.index).split('\n').length;
+        const upper = method!.toUpperCase();
+        nodes.push({
+          id: `framework:rust:route-axum:${file}:${line}:${upper}:${routePath}`,
+          kind: 'route',
+          name: `${upper} ${routePath}`,
+          qualifiedName: `${file}::route:${routePath}`,
+          filePath: file,
+          startLine: line,
+          endLine: line,
+          startColumn: 0,
+          endColumn: match[0].length,
+          language: 'rust',
+          provenance: 'framework:rust',
+          updatedAt: now,
         });
       }
     }
 
-    // Axum: .route("/path", get(handler))
-    const axumRegex = /\.route\s*\(\s*"([^"]+)"\s*,\s*(get|post|put|patch|delete)\s*\(\s*(\w+)/g;
-    while ((match = axumRegex.exec(safe)) !== null) {
-      const [, routePath, method, handler] = match;
-      const line = safe.slice(0, match.index).split('\n').length;
-      const upper = method!.toUpperCase();
+    return { nodes };
+  },
 
-      const routeNode: Node = {
-        id: `route:${filePath}:${line}:${upper}:${routePath}`,
-        kind: 'route',
-        name: `${upper} ${routePath}`,
-        qualifiedName: `${filePath}::route:${routePath}`,
-        filePath,
-        startLine: line,
-        endLine: line,
-        startColumn: 0,
-        endColumn: match[0].length,
-        language: 'rust',
-        updatedAt: now,
-      };
-      nodes.push(routeNode);
+  augment(graph: GraphView): AugmentResult {
+    const edges: Edge[] = [];
+    const tags: Array<{ nodeId: string; tags: string[] }> = [];
 
-      references.push({
-        fromNodeId: routeNode.id,
-        referenceName: handler!,
-        referenceKind: 'references',
-        line,
-        column: 0,
-        filePath,
-        language: 'rust',
+    for (const route of graph.getNodesByKind('route')) {
+      if (route.provenance !== 'framework:rust') continue;
+      const safe = graph.readFileStripped(route.filePath, 'rust');
+      if (!safe) continue;
+      const lines = safe.split('\n');
+      const handlerName = findRustHandlerName(lines, route.startLine - 1);
+      if (!handlerName) continue;
+
+      const candidates = graph
+        .getNodesByName(handlerName)
+        .filter((n) => n.kind === 'function');
+      if (candidates.length === 0) continue;
+      let preferred = candidates.filter((n) => n.filePath === route.filePath);
+      if (preferred.length === 0) preferred = candidates;
+      if (preferred.length !== 1) continue;
+
+      edges.push({
+        source: route.id,
+        target: preferred[0]!.id,
+        kind: 'references',
+        subkind: 'convention',
+        line: undefined,
+        column: undefined,
+        provenance: 'framework:rust',
+        confidence: 0.85,
       });
+      tags.push({ nodeId: preferred[0]!.id, tags: ['route-handler'] });
     }
 
-    return { nodes, references };
+    return { edges, tags };
   },
 };
 
-// Directory patterns
-const HANDLER_DIRS = ['/handlers/', '/handler/', '/api/', '/routes/', '/controllers/'];
-const SERVICE_DIRS = ['/services/', '/service/', '/repository/', '/domain/'];
-const MODEL_DIRS = ['/models/', '/model/', '/entities/', '/entity/', '/domain/', '/types/'];
-
-const FUNCTION_KINDS = new Set(['function']);
-const SERVICE_KINDS = new Set(['struct', 'trait']);
-const STRUCT_KINDS = new Set(['struct']);
-
-/**
- * Resolve a symbol by name using indexed queries instead of scanning all files.
- */
-function resolveByNameAndKind(
-  name: string,
-  kinds: Set<string>,
-  preferredDirPatterns: string[],
-  context: ResolutionContext,
-): string | null {
-  const candidates = context.getNodesByName(name);
-  if (candidates.length === 0) return null;
-
-  const kindFiltered = candidates.filter((n) => kinds.has(n.kind));
-  if (kindFiltered.length === 0) return null;
-
-  // Prefer candidates in framework-conventional directories
-  const preferred = kindFiltered.filter((n) =>
-    preferredDirPatterns.some((d) => n.filePath.includes(d))
+function findRustHandlerName(lines: string[], startLine: number): string | null {
+  const startLineText = lines[startLine] ?? '';
+  // Axum same-line: .route("/x", get(handler))
+  const axum = startLineText.match(
+    /\.route\s*\(\s*"[^"]+"\s*,\s*(?:get|post|put|patch|delete)\s*\(\s*(\w+)/,
   );
-
-  if (preferred.length > 0) return preferred[0]!.id;
-
-  // Fall back to any match
-  return kindFiltered[0]!.id;
+  if (axum) return axum[1]!;
+  // Attribute: walk forward up to 5 lines for `(pub) (async) fn name(`
+  for (let i = startLine + 1; i < Math.min(lines.length, startLine + 6); i += 1) {
+    const m = lines[i]!.match(/^\s*(?:pub\s+)?(?:async\s+)?fn\s+(\w+)/);
+    if (m) return m[1]!;
+  }
+  return null;
 }
 
 interface ModuleResolution {
@@ -213,9 +180,7 @@ interface ModuleResolution {
 }
 
 function resolveModule(name: string, context: ResolutionContext): ModuleResolution | null {
-  // Rust modules can be either mod.rs in a directory or name.rs
   const localPaths = [`src/${name}.rs`, `src/${name}/mod.rs`];
-
   const workspaceCrates = getCachedCargoWorkspaceCrateMap(context);
   const cratePath = workspaceCrates.get(name);
   const workspacePaths = cratePath

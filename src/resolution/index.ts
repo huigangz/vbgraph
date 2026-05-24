@@ -523,8 +523,13 @@ export class ReferenceResolver {
 
     const candidates: ResolvedRef[] = [];
 
-    // Strategy 1: Try framework-specific resolution
+    // Strategy 1: Try framework-specific resolution.
+    // `resolve` is `@deprecated` and optional after P1.3 — each migrated
+    // resolver drops the field, so the guard short-circuits naturally.
+    // The whole strategy is dead code once every resolver has migrated;
+    // it goes away in the P3 cleanup PR.
     for (const framework of this.frameworks) {
+      if (!framework.resolve) continue;
       const result = framework.resolve(ref, this.context);
       if (result) {
         if (result.confidence >= 0.9) return result; // High confidence, return immediately

@@ -1,12 +1,27 @@
 /**
- * C# Framework Resolver
+ * C# Framework Resolver — ASP.NET Core / ASP.NET MVC.
  *
- * Handles ASP.NET Core, ASP.NET MVC, and common C# patterns.
+ * Phase 3 (synthesize/augment) shape. The legacy per-file `extract` and
+ * per-ref `resolve` hooks were removed in this resolver's PR-3 migration:
+ *   - `extract` → `synthesize`: same attribute / minimal-API regex over
+ *     the file's stripped content, now driven by the whole-project pass.
+ *   - `resolve` → `augment`: the by-name suffix / conventional-directory
+ *     resolution is fully covered by P0.5b's scope resolver for csharp.
+ *     Augment retains route→handler `references/convention` edges plus
+ *     the `aspnet:controller` / `route-handler` inherent + derived tag
+ *     pair.
  */
 
-import { Node } from '../../types';
-import { FrameworkResolver, UnresolvedRef, ResolvedRef, ResolutionContext } from '../types';
-import { stripCommentsForRegex } from '../strip-comments';
+import { Edge, Node } from '../../types';
+import {
+  AugmentResult,
+  FrameworkResolver,
+  ResolutionContext,
+  SynthesizeResult,
+} from '../types';
+import { GraphView } from '../graph-view';
+
+const CONTROLLER_DIRS = ['/Controllers/', '/Controller/'];
 
 export const aspnetResolver: FrameworkResolver = {
   name: 'aspnet',
@@ -47,200 +62,151 @@ export const aspnetResolver: FrameworkResolver = {
     return allFiles.some((f) => f.includes('/Controllers/') && f.endsWith('Controller.cs'));
   },
 
-  resolve(ref: UnresolvedRef, context: ResolutionContext): ResolvedRef | null {
-    // Pattern 1: Controller references
-    if (ref.referenceName.endsWith('Controller')) {
-      const result = resolveByNameAndKind(ref.referenceName, CLASS_KINDS, CONTROLLER_DIRS, context);
-      if (result) {
-        return {
-          original: ref,
-          targetNodeId: result,
-          confidence: 0.85,
-          resolvedBy: 'framework',
-        };
+  synthesize(graph: GraphView): SynthesizeResult {
+    const nodes: Node[] = [];
+    const now = Date.now();
+
+    for (const file of graph.getAllFiles()) {
+      if (!file.endsWith('.cs')) continue;
+      const safe = graph.readFileStripped(file, 'csharp');
+      if (!safe) continue;
+
+      // [HttpGet("path")], [HttpPost("path")], etc.
+      const attrRegex = /\[(HttpGet|HttpPost|HttpPut|HttpPatch|HttpDelete)\s*\(\s*"([^"]+)"\s*\)\]/g;
+      let match: RegExpExecArray | null;
+      while ((match = attrRegex.exec(safe)) !== null) {
+        const [, verb, routePath] = match;
+        const method = verb!.replace(/^Http/, '').toUpperCase();
+        const line = safe.slice(0, match.index).split('\n').length;
+        nodes.push({
+          id: `framework:aspnet:route:${method}:${routePath}:${file}:${line}`,
+          kind: 'route',
+          name: `${method} ${routePath}`,
+          qualifiedName: `${file}::route:${routePath}`,
+          filePath: file,
+          startLine: line,
+          endLine: line,
+          startColumn: 0,
+          endColumn: match[0].length,
+          language: 'csharp',
+          provenance: 'framework:aspnet',
+          updatedAt: now,
+        });
+      }
+
+      // Minimal APIs: app.MapGet("/path", handler)
+      const minimalRegex = /\.Map(Get|Post|Put|Patch|Delete)\s*\(\s*"([^"]+)"\s*,\s*([^,)]+)/g;
+      while ((match = minimalRegex.exec(safe)) !== null) {
+        const [, verb, routePath] = match;
+        const method = verb!.toUpperCase();
+        const line = safe.slice(0, match.index).split('\n').length;
+        nodes.push({
+          id: `framework:aspnet:route:${method}:${routePath}:${file}:${line}`,
+          kind: 'route',
+          name: `${method} ${routePath}`,
+          qualifiedName: `${file}::route:${routePath}`,
+          filePath: file,
+          startLine: line,
+          endLine: line,
+          startColumn: 0,
+          endColumn: match[0].length,
+          language: 'csharp',
+          provenance: 'framework:aspnet',
+          updatedAt: now,
+        });
       }
     }
 
-    // Pattern 2: Service references (dependency injection)
-    if (ref.referenceName.endsWith('Service') || ref.referenceName.startsWith('I') && ref.referenceName.length > 1) {
-      const result = resolveByNameAndKind(ref.referenceName, SERVICE_KINDS, SERVICE_DIRS, context);
-      if (result) {
-        return {
-          original: ref,
-          targetNodeId: result,
-          confidence: 0.85,
-          resolvedBy: 'framework',
-        };
-      }
-    }
-
-    // Pattern 3: Repository references
-    if (ref.referenceName.endsWith('Repository')) {
-      const result = resolveByNameAndKind(ref.referenceName, SERVICE_KINDS, REPO_DIRS, context);
-      if (result) {
-        return {
-          original: ref,
-          targetNodeId: result,
-          confidence: 0.85,
-          resolvedBy: 'framework',
-        };
-      }
-    }
-
-    // Pattern 4: Model/Entity references
-    if (/^[A-Z][a-zA-Z]+$/.test(ref.referenceName)) {
-      const result = resolveByNameAndKind(ref.referenceName, CLASS_KINDS, MODEL_DIRS, context);
-      if (result) {
-        return {
-          original: ref,
-          targetNodeId: result,
-          confidence: 0.7,
-          resolvedBy: 'framework',
-        };
-      }
-    }
-
-    // Pattern 5: ViewModel references
-    if (ref.referenceName.endsWith('ViewModel') || ref.referenceName.endsWith('Dto')) {
-      const result = resolveByNameAndKind(ref.referenceName, CLASS_KINDS, VIEWMODEL_DIRS, context);
-      if (result) {
-        return {
-          original: ref,
-          targetNodeId: result,
-          confidence: 0.8,
-          resolvedBy: 'framework',
-        };
-      }
-    }
-
-    return null;
+    return { nodes };
   },
 
-  extract(filePath, content) {
-    if (!filePath.endsWith('.cs')) return { nodes: [], references: [] };
-    const nodes: Node[] = [];
-    const references: UnresolvedRef[] = [];
-    const now = Date.now();
-    const safe = stripCommentsForRegex(content, 'csharp');
+  augment(graph: GraphView): AugmentResult {
+    const edges: Edge[] = [];
+    const tags: Array<{ nodeId: string; tags: string[] }> = [];
 
-    // [HttpGet("path")], [HttpPost("path")], etc.
-    const attrRegex = /\[(HttpGet|HttpPost|HttpPut|HttpPatch|HttpDelete)\s*\(\s*"([^"]+)"\s*\)\]/g;
-    let match: RegExpExecArray | null;
-    while ((match = attrRegex.exec(safe)) !== null) {
-      const [, verb, routePath] = match;
-      const method = verb!.replace(/^Http/, '').toUpperCase();
-      const line = safe.slice(0, match.index).split('\n').length;
+    for (const route of graph.getNodesByKind('route')) {
+      if (route.provenance !== 'framework:aspnet') continue;
+      const handlerName = findHandlerName(graph, route);
+      if (!handlerName) continue;
 
-      const routeNode: Node = {
-        id: `route:${filePath}:${line}:${method}:${routePath}`,
-        kind: 'route',
-        name: `${method} ${routePath}`,
-        qualifiedName: `${filePath}::route:${routePath}`,
-        filePath,
-        startLine: line,
-        endLine: line,
-        startColumn: 0,
-        endColumn: match[0].length,
-        language: 'csharp',
-        updatedAt: now,
-      };
-      nodes.push(routeNode);
+      // Attribute routes: look for a method declared after the [HttpVerb] line
+      // in the same file. Minimal-API routes: the handlerName comes from the
+      // `, handler)` slot at the end of MapXxx.
+      const candidates = graph
+        .getNodesByName(handlerName)
+        .filter((n) => n.kind === 'method' || n.kind === 'function');
+      if (candidates.length === 0) continue;
 
-      // Capture the next method declaration
-      const tail = safe.slice(match.index + match[0].length);
-      const methodMatch = tail.match(/(?:public|private|protected|internal)\s+[\w<>,\s\[\]]+?\s+(\w+)\s*\(/);
-      if (methodMatch) {
-        references.push({
-          fromNodeId: routeNode.id,
-          referenceName: methodMatch[1]!,
-          referenceKind: 'references',
-          line,
-          column: 0,
-          filePath,
-          language: 'csharp',
-        });
+      // Prefer methods in a Controllers/ directory.
+      let preferred = candidates.filter((n) =>
+        CONTROLLER_DIRS.some((d) => n.filePath.includes(d)),
+      );
+      if (preferred.length === 0) preferred = candidates;
+
+      // Only emit the edge if we've narrowed to a single target — avoids
+      // wrong-target false positives. Falls back to file-collocated method
+      // when the route's own file has a unique match.
+      let target = preferred.length === 1 ? preferred[0] : undefined;
+      if (!target) {
+        const sameFile = preferred.filter((n) => n.filePath === route.filePath);
+        if (sameFile.length === 1) target = sameFile[0];
       }
+      if (!target) continue;
+
+      edges.push({
+        source: route.id,
+        target: target.id,
+        kind: 'references',
+        subkind: 'convention',
+        line: undefined,
+        column: undefined,
+        provenance: 'framework:aspnet',
+        confidence: 0.85,
+      });
+      tags.push({ nodeId: target.id, tags: ['aspnet:controller', 'route-handler'] });
     }
 
-    // Minimal APIs: app.MapGet("/path", handler)
-    const minimalRegex = /\.Map(Get|Post|Put|Patch|Delete)\s*\(\s*"([^"]+)"\s*,\s*([^,)]+)/g;
-    while ((match = minimalRegex.exec(safe)) !== null) {
-      const [, verb, routePath, handlerExpr] = match;
-      const method = verb!.toUpperCase();
-      const line = safe.slice(0, match.index).split('\n').length;
-
-      const routeNode: Node = {
-        id: `route:${filePath}:${line}:${method}:${routePath}`,
-        kind: 'route',
-        name: `${method} ${routePath}`,
-        qualifiedName: `${filePath}::route:${routePath}`,
-        filePath,
-        startLine: line,
-        endLine: line,
-        startColumn: 0,
-        endColumn: match[0].length,
-        language: 'csharp',
-        updatedAt: now,
-      };
-      nodes.push(routeNode);
-
-      const handlerName = extractCSharpTailIdent(handlerExpr!);
-      if (handlerName) {
-        references.push({
-          fromNodeId: routeNode.id,
-          referenceName: handlerName,
-          referenceKind: 'references',
-          line,
-          column: 0,
-          filePath,
-          language: 'csharp',
-        });
-      }
-    }
-
-    return { nodes, references };
+    return { edges, tags };
   },
 };
+
+/**
+ * For an aspnet route node, infer the handler method name.
+ *
+ * Attribute style ([HttpGet("/x")]): scan the file's stripped content
+ * starting at the route's line for the next method declaration.
+ *
+ * Minimal-API style (app.MapGet("/x", handler)): the handler expression
+ * sits on the same line as the route. Pull the trailing identifier.
+ */
+function findHandlerName(graph: GraphView, route: Node): string | null {
+  const safe = graph.readFileStripped(route.filePath, 'csharp');
+  if (!safe) return null;
+  const lines = safe.split('\n');
+  const startLine = Math.max(0, route.startLine - 1);
+  const startLineText = lines[startLine] ?? '';
+
+  // Minimal API on the same line: `.MapGet("/x", handler)` — pull trailing ident.
+  const minimal = startLineText.match(
+    /\.Map(?:Get|Post|Put|Patch|Delete)\s*\(\s*"[^"]+"\s*,\s*([^,)]+)/,
+  );
+  if (minimal) {
+    return extractCSharpTailIdent(minimal[1]!);
+  }
+
+  // Attribute style: walk forward up to 10 lines for `(public|private|...) RetType Name(`.
+  for (let i = startLine + 1; i < Math.min(lines.length, startLine + 10); i += 1) {
+    const m = lines[i]!.match(
+      /(?:public|private|protected|internal)\s+[\w<>,\s\[\]]+?\s+(\w+)\s*\(/,
+    );
+    if (m) return m[1]!;
+  }
+  return null;
+}
 
 /** Extract last identifier from an expression like `MyService.Handler` or `Handler`. */
 function extractCSharpTailIdent(expr: string): string | null {
   const cleaned = expr.trim().replace(/\s+/g, '');
   const m = cleaned.match(/(?:\.|^)([A-Za-z_][A-Za-z0-9_]*)$/);
   return m ? m[1]! : null;
-}
-
-// Directory patterns
-const CONTROLLER_DIRS = ['/Controllers/'];
-const SERVICE_DIRS = ['/Services/', '/Service/', '/Application/'];
-const REPO_DIRS = ['/Repositories/', '/Repository/', '/Data/', '/Infrastructure/'];
-const MODEL_DIRS = ['/Models/', '/Model/', '/Entities/', '/Entity/', '/Domain/'];
-const VIEWMODEL_DIRS = ['/ViewModels/', '/ViewModel/', '/DTOs/', '/Dto/'];
-
-const CLASS_KINDS = new Set(['class']);
-const SERVICE_KINDS = new Set(['class', 'interface']);
-
-/**
- * Resolve a symbol by name using indexed queries instead of scanning all files.
- */
-function resolveByNameAndKind(
-  name: string,
-  kinds: Set<string>,
-  preferredDirPatterns: string[],
-  context: ResolutionContext,
-): string | null {
-  const candidates = context.getNodesByName(name);
-  if (candidates.length === 0) return null;
-
-  const kindFiltered = candidates.filter((n) => kinds.has(n.kind));
-  if (kindFiltered.length === 0) return null;
-
-  // Prefer candidates in framework-conventional directories
-  const preferred = kindFiltered.filter((n) =>
-    preferredDirPatterns.some((d) => n.filePath.includes(d))
-  );
-
-  if (preferred.length > 0) return preferred[0]!.id;
-
-  // Fall back to any match
-  return kindFiltered[0]!.id;
 }

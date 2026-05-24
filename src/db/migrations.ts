@@ -9,7 +9,7 @@ import { SqliteDatabase } from './sqlite-adapter';
 /**
  * Current schema version
  */
-export const CURRENT_SCHEMA_VERSION = 5;
+export const CURRENT_SCHEMA_VERSION = 6;
 
 /**
  * Migration definition
@@ -141,6 +141,25 @@ const migrations: Migration[] = [
         "[codegraph] Migrated DB to schema v5 (SCIP ingestion). Existing edges " +
           "retain their original provenances; run 'codegraph index' to upgrade incrementally.",
       );
+    },
+  },
+  {
+    version: 6,
+    description:
+      'Phase 3 framework synthesis: node_tags table for many-to-one tag attachment to nodes',
+    up: (db) => {
+      // No data migration — P0 produces zero tags.
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS node_tags (
+          node_id   TEXT NOT NULL,
+          tag       TEXT NOT NULL,
+          added_by  TEXT NOT NULL,
+          PRIMARY KEY (node_id, tag),
+          FOREIGN KEY (node_id) REFERENCES nodes(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_node_tags_tag      ON node_tags(tag);
+        CREATE INDEX IF NOT EXISTS idx_node_tags_added_by ON node_tags(added_by);
+      `);
     },
   },
 ];

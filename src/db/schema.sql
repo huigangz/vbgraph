@@ -2,7 +2,7 @@
 -- This file is the full current schema (applied verbatim to fresh databases).
 -- Existing databases are upgraded incrementally by src/db/migrations.ts —
 -- every change here must have a matching migration entry there.
--- Current schema version: 5 (see CURRENT_SCHEMA_VERSION in migrations.ts).
+-- Current schema version: 6 (see CURRENT_SCHEMA_VERSION in migrations.ts).
 
 -- Schema version tracking
 CREATE TABLE IF NOT EXISTS schema_versions (
@@ -212,3 +212,26 @@ CREATE TABLE IF NOT EXISTS scip_external_refs (
 );
 CREATE INDEX IF NOT EXISTS idx_scip_external_refs_index ON scip_external_refs(scip_index_path);
 CREATE INDEX IF NOT EXISTS idx_scip_external_refs_node ON scip_external_refs(external_node_id);
+
+-- =============================================================================
+-- Phase 3 framework synthesis (schema v6)
+-- =============================================================================
+--
+-- node_tags attaches many-to-one labels to nodes (e.g. 'spring:service' on a
+-- class, 'route-handler' on a method). Tag-naming convention:
+--   - lowercase, kebab-case
+--   - `<framework>:<role>` for framework-specific roles
+--     (spring:service, react:hook, aspnet:controller, temporal:workflow, …)
+--   - cross-framework roles unprefixed: route-handler, entry-point
+-- Conflict policy: (node_id, tag) duplicates use INSERT OR IGNORE; first
+-- writer wins on added_by (mirrors pickPrimaryProvenance "first-occurrence
+-- wins" for equal-rank provenances).
+CREATE TABLE IF NOT EXISTS node_tags (
+    node_id   TEXT NOT NULL,
+    tag       TEXT NOT NULL,
+    added_by  TEXT NOT NULL,
+    PRIMARY KEY (node_id, tag),
+    FOREIGN KEY (node_id) REFERENCES nodes(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_node_tags_tag      ON node_tags(tag);
+CREATE INDEX IF NOT EXISTS idx_node_tags_added_by ON node_tags(added_by);

@@ -72,7 +72,7 @@ describe('fresh database (schema.sql)', () => {
       expect(objectExists(db, 'index', 'idx_nodes_provenance')).toBe(true);
 
       expect(conn.getSchemaVersion()?.version).toBe(CURRENT_SCHEMA_VERSION);
-      expect(CURRENT_SCHEMA_VERSION).toBe(5);
+      expect(CURRENT_SCHEMA_VERSION).toBe(6);
     } finally {
       conn.close();
     }

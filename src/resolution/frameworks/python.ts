@@ -1,18 +1,44 @@
 /**
- * Python Framework Resolver
+ * Python Framework Resolvers — Phase 3 shape.
  *
- * Handles Django, Flask, and FastAPI patterns.
+ * django/flask/fastapi share Python machinery. All three migrate together
+ * (per the plan's PR-8). For each:
+ *   - `detect` unchanged.
+ *   - `extract` → `synthesize`: same route regexes, now whole-project pass.
+ *   - `resolve` → dropped. P0.5b scope resolver covers file-local refs in
+ *     Python; the by-name/suffix lookups were heuristic best-effort that
+ *     scope resolution does more precisely.
+ *
+ * Augment is omitted for now: the legacy `extract` produced `UnresolvedRef`
+ * entries that the strategy-2 resolver chain handled. Once these resolvers
+ * stop emitting refs (they don't, in synthesize), the corresponding edges
+ * are reconstructed by tree-sitter `calls` extraction on the urls.py /
+ * decorator-target functions. A future augment can emit explicit
+ * route→handler `references/convention` edges when there's appetite for
+ * the recall gain.
  */
 
-import { Node } from '../../types';
-import { FrameworkResolver, UnresolvedRef, ResolutionContext, FrameworkExtractionResult } from '../types';
-import { stripCommentsForRegex } from '../strip-comments';
+import { Edge, Node } from '../../types';
+import {
+  AugmentResult,
+  FrameworkResolver,
+  ResolutionContext,
+  SynthesizeResult,
+} from '../types';
+import { GraphView } from '../graph-view';
+
+// ════════════════════════════════════════════════════════════════════
+// django
+// ════════════════════════════════════════════════════════════════════
+
+const DJANGO_ROUTE_REGEX =
+  /\b(path|re_path|url)\s*\(\s*r?['"]([^'"]+)['"]\s*,\s*([\w.]+(?:\s*\([^)]*\))?)/g;
 
 export const djangoResolver: FrameworkResolver = {
   name: 'django',
   languages: ['python'],
 
-  detect(context) {
+  detect(context: ResolutionContext) {
     const requirements = context.readFile('requirements.txt');
     if (requirements && requirements.toLowerCase().includes('django')) return true;
     const setup = context.readFile('setup.py');
@@ -22,101 +48,111 @@ export const djangoResolver: FrameworkResolver = {
     return context.fileExists('manage.py');
   },
 
-  resolve(ref, context) {
-    if (ref.referenceName.endsWith('Model') || /^[A-Z][a-z]+$/.test(ref.referenceName)) {
-      const result = resolveByNameAndKind(ref.referenceName, CLASS_KINDS, MODEL_DIRS, context);
-      if (result) return { original: ref, targetNodeId: result, confidence: 0.8, resolvedBy: 'framework' };
-    }
-    if (ref.referenceName.endsWith('View') || ref.referenceName.endsWith('ViewSet')) {
-      const result = resolveByNameAndKind(ref.referenceName, VIEW_KINDS, VIEW_DIRS, context);
-      if (result) return { original: ref, targetNodeId: result, confidence: 0.8, resolvedBy: 'framework' };
-    }
-    if (ref.referenceName.endsWith('Form')) {
-      const result = resolveByNameAndKind(ref.referenceName, CLASS_KINDS, FORM_DIRS, context);
-      if (result) return { original: ref, targetNodeId: result, confidence: 0.8, resolvedBy: 'framework' };
-    }
-    return null;
-  },
-
-  extract(filePath, content) {
-    if (!filePath.endsWith('.py')) return { nodes: [], references: [] };
-
+  synthesize(graph: GraphView): SynthesizeResult {
     const nodes: Node[] = [];
-    const references: UnresolvedRef[] = [];
     const now = Date.now();
-    const safe = stripCommentsForRegex(content, 'python');
 
-    // path('url', handler, name=...) / re_path(r'...', handler) / url(r'...', handler)
-    // Capture groups: 1=function name, 2=url string, 3=handler expr
-    // Handler expr may contain one balanced () pair (e.g. View.as_view(), include('x.y'))
-    const routeRegex = /\b(path|re_path|url)\s*\(\s*r?['"]([^'"]+)['"]\s*,\s*([\w.]+(?:\s*\([^)]*\))?)/g;
+    for (const file of graph.getAllFiles()) {
+      if (!file.endsWith('.py')) continue;
+      const safe = graph.readFileStripped(file, 'python');
+      if (!safe) continue;
 
-    let match: RegExpExecArray | null;
-    while ((match = routeRegex.exec(safe)) !== null) {
-      const [, _fn, urlPath, handlerExpr] = match;
-      const line = safe.slice(0, match.index).split('\n').length;
-
-      const routeNode: Node = {
-        id: `route:${filePath}:${line}:${urlPath}`,
-        kind: 'route',
-        name: urlPath!,
-        qualifiedName: `${filePath}::route:${urlPath}`,
-        filePath,
-        startLine: line,
-        endLine: line,
-        startColumn: 0,
-        endColumn: match[0].length,
-        language: 'python',
-        updatedAt: now,
-      };
-      nodes.push(routeNode);
-
-      const handler = handlerExpr!.trim();
-      const target = resolveHandlerName(handler);
-      if (target) {
-        references.push({
-          fromNodeId: routeNode.id,
-          referenceName: target.name,
-          referenceKind: target.kind,
-          line,
-          column: 0,
-          filePath,
+      DJANGO_ROUTE_REGEX.lastIndex = 0;
+      let match: RegExpExecArray | null;
+      while ((match = DJANGO_ROUTE_REGEX.exec(safe)) !== null) {
+        const [, _fn, urlPath] = match;
+        const line = safe.slice(0, match.index).split('\n').length;
+        nodes.push({
+          id: `framework:django:route:${file}:${line}:${urlPath}`,
+          kind: 'route',
+          name: urlPath!,
+          qualifiedName: `${file}::route:${urlPath}`,
+          filePath: file,
+          startLine: line,
+          endLine: line,
+          startColumn: 0,
+          endColumn: match[0].length,
           language: 'python',
+          provenance: 'framework:django',
+          updatedAt: now,
         });
       }
     }
 
-    return { nodes, references };
+    return { nodes };
+  },
+
+  augment(graph: GraphView): AugmentResult {
+    const edges: Edge[] = [];
+    const tags: Array<{ nodeId: string; tags: string[] }> = [];
+
+    for (const route of graph.getNodesByKind('route')) {
+      if (route.provenance !== 'framework:django') continue;
+      const safe = graph.readFileStripped(route.filePath, 'python');
+      if (!safe) continue;
+      const lineText = safe.split('\n')[route.startLine - 1];
+      if (!lineText) continue;
+      const m = lineText.match(
+        /\b(?:path|re_path|url)\s*\(\s*r?['"][^'"]+['"]\s*,\s*([\w.]+(?:\s*\([^)]*\))?)/,
+      );
+      if (!m) continue;
+      const handlerName = parseDjangoHandlerName(m[1]!);
+      if (!handlerName) continue;
+
+      const candidates = graph
+        .getNodesByName(handlerName)
+        .filter((n) => n.kind === 'class' || n.kind === 'function');
+      if (candidates.length === 0) continue;
+      // Prefer a candidate in a views/ directory.
+      let preferred = candidates.filter((n) => n.filePath.includes('views'));
+      if (preferred.length === 0) preferred = candidates;
+      if (preferred.length !== 1) continue;
+      const target = preferred[0]!;
+
+      edges.push({
+        source: route.id,
+        target: target.id,
+        kind: 'references',
+        subkind: 'convention',
+        line: undefined,
+        column: undefined,
+        provenance: 'framework:django',
+        confidence: 0.85,
+      });
+      tags.push({ nodeId: target.id, tags: ['django:view', 'route-handler'] });
+    }
+
+    return { edges, tags };
   },
 };
 
 /**
- * Parse a Django URL handler expression and return the symbol/module to link.
- * Returns null for shapes we can't confidently link (e.g. lambdas).
+ * Parse a Django URL handler expression to its bound name.
+ *  - `include('module.path')` → null (we don't link to module-level names yet)
+ *  - `UserView.as_view()` → 'UserView'
+ *  - `views.UserView.as_view()` → 'UserView' (tail ident)
+ *  - `home_view` → 'home_view'
  */
-function resolveHandlerName(expr: string): { name: string; kind: 'references' | 'imports' } | null {
-  // include('module.path')
-  const includeMatch = expr.match(/^include\s*\(\s*['"]([^'"]+)['"]/);
-  if (includeMatch) return { name: includeMatch[1]!, kind: 'imports' };
-
-  // Strip trailing .as_view(...) or .as_view()
+function parseDjangoHandlerName(expr: string): string | null {
+  if (/^include\s*\(/.test(expr)) return null;
+  // Strip trailing .as_view(...) or any trailing method call.
   let head = expr.replace(/\.as_view\s*\([^)]*\)\s*$/, '');
-  // Drop any other trailing method call
   head = head.replace(/\.\w+\s*\([^)]*\)\s*$/, '');
-
   const dotted = head.split('.').filter(Boolean);
   if (dotted.length === 0) return null;
   const last = dotted[dotted.length - 1]!;
-  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(last)) return null;
-
-  return { name: last, kind: 'references' };
+  return /^[A-Za-z_][A-Za-z0-9_]*$/.test(last) ? last : null;
 }
+
+// ════════════════════════════════════════════════════════════════════
+// flask
+// ════════════════════════════════════════════════════════════════════
 
 export const flaskResolver: FrameworkResolver = {
   name: 'flask',
   languages: ['python'],
 
-  detect(context) {
+  detect(context: ResolutionContext) {
     const requirements = context.readFile('requirements.txt');
     if (requirements && /\bflask\b/i.test(requirements)) return true;
     const pyproject = context.readFile('pyproject.toml');
@@ -128,33 +164,57 @@ export const flaskResolver: FrameworkResolver = {
     return false;
   },
 
-  resolve(ref, context) {
-    if (ref.referenceName.endsWith('_bp') || ref.referenceName.endsWith('_blueprint')) {
-      const result = resolveByNameAndKind(ref.referenceName, VARIABLE_KINDS, [], context);
-      if (result) return { original: ref, targetNodeId: result, confidence: 0.8, resolvedBy: 'framework' };
-    }
-    return null;
-  },
+  synthesize(graph: GraphView): SynthesizeResult {
+    const nodes: Node[] = [];
+    const now = Date.now();
 
-  extract(filePath, content) {
-    if (!filePath.endsWith('.py')) return { nodes: [], references: [] };
-    return extractDecoratorRoutes(filePath, stripCommentsForRegex(content, 'python'), {
-      // Flask: @x.route('/path', methods=[...])
-      decoratorRegex: /@(\w+)\.route\s*\(\s*['"]([^'"]+)['"](?:\s*,\s*methods\s*=\s*\[([^\]]+)\])?\s*\)\s*\n\s*(?:async\s+)?def\s+(\w+)/g,
-      defaultMethod: 'GET',
-      methodFromGroup: 3,
-      pathGroup: 2,
-      handlerGroup: 4,
-      language: 'python',
-    });
+    for (const file of graph.getAllFiles()) {
+      if (!file.endsWith('.py')) continue;
+      const safe = graph.readFileStripped(file, 'python');
+      if (!safe) continue;
+
+      // @x.route('/path', methods=[...])  \n  def handler(...)
+      const decoratorRegex =
+        /@(\w+)\.route\s*\(\s*['"]([^'"]+)['"](?:\s*,\s*methods\s*=\s*\[([^\]]+)\])?\s*\)\s*\n\s*(?:async\s+)?def\s+(\w+)/g;
+      let match: RegExpExecArray | null;
+      while ((match = decoratorRegex.exec(safe)) !== null) {
+        const routePath = match[2]!;
+        let method = 'GET';
+        if (match[3]) {
+          const m = match[3]!.match(/['"]([A-Z]+)['"]/i);
+          if (m) method = m[1]!.toUpperCase();
+        }
+        const line = safe.slice(0, match.index).split('\n').length;
+        nodes.push({
+          id: `framework:flask:route:${file}:${line}:${method}:${routePath}`,
+          kind: 'route',
+          name: `${method} ${routePath}`,
+          qualifiedName: `${file}::${method}:${routePath}`,
+          filePath: file,
+          startLine: line,
+          endLine: line,
+          startColumn: 0,
+          endColumn: match[0].length,
+          language: 'python',
+          provenance: 'framework:flask',
+          updatedAt: now,
+        });
+      }
+    }
+
+    return { nodes };
   },
 };
+
+// ════════════════════════════════════════════════════════════════════
+// fastapi
+// ════════════════════════════════════════════════════════════════════
 
 export const fastapiResolver: FrameworkResolver = {
   name: 'fastapi',
   languages: ['python'],
 
-  detect(context) {
+  detect(context: ResolutionContext) {
     const requirements = context.readFile('requirements.txt');
     if (requirements && /\bfastapi\b/i.test(requirements)) return true;
     const pyproject = context.readFile('pyproject.toml');
@@ -166,132 +226,40 @@ export const fastapiResolver: FrameworkResolver = {
     return false;
   },
 
-  resolve(ref, context) {
-    if (ref.referenceName.endsWith('_router') || ref.referenceName === 'router') {
-      const result = resolveByNameAndKind(ref.referenceName, VARIABLE_KINDS, ROUTER_DIRS, context);
-      if (result) return { original: ref, targetNodeId: result, confidence: 0.8, resolvedBy: 'framework' };
-    }
-    if (ref.referenceName.startsWith('get_') || ref.referenceName.startsWith('Depends')) {
-      const result = resolveByNameAndKind(ref.referenceName, FUNCTION_KINDS, DEP_DIRS, context);
-      if (result) return { original: ref, targetNodeId: result, confidence: 0.75, resolvedBy: 'framework' };
-    }
-    return null;
-  },
+  synthesize(graph: GraphView): SynthesizeResult {
+    const nodes: Node[] = [];
+    const now = Date.now();
 
-  extract(filePath, content) {
-    if (!filePath.endsWith('.py')) return { nodes: [], references: [] };
-    return extractDecoratorRoutes(filePath, stripCommentsForRegex(content, 'python'), {
-      // FastAPI: @x.METHOD('/path') -> handler on the next def line
-      decoratorRegex: /@(\w+)\.(get|post|put|patch|delete|options|head)\s*\(\s*['"]([^'"]+)['"]/g,
-      defaultMethod: '',
-      methodGroup: 2,
-      pathGroup: 3,
-      findHandler: true,
-      language: 'python',
-    });
+    for (const file of graph.getAllFiles()) {
+      if (!file.endsWith('.py')) continue;
+      const safe = graph.readFileStripped(file, 'python');
+      if (!safe) continue;
+
+      // @x.METHOD('/path') -> handler on the next def line
+      const decoratorRegex =
+        /@(\w+)\.(get|post|put|patch|delete|options|head)\s*\(\s*['"]([^'"]+)['"]/g;
+      let match: RegExpExecArray | null;
+      while ((match = decoratorRegex.exec(safe)) !== null) {
+        const method = match[2]!.toUpperCase();
+        const routePath = match[3]!;
+        const line = safe.slice(0, match.index).split('\n').length;
+        nodes.push({
+          id: `framework:fastapi:route:${file}:${line}:${method}:${routePath}`,
+          kind: 'route',
+          name: `${method} ${routePath}`,
+          qualifiedName: `${file}::${method}:${routePath}`,
+          filePath: file,
+          startLine: line,
+          endLine: line,
+          startColumn: 0,
+          endColumn: match[0].length,
+          language: 'python',
+          provenance: 'framework:fastapi',
+          updatedAt: now,
+        });
+      }
+    }
+
+    return { nodes };
   },
 };
-
-interface DecoratorRouteOpts {
-  decoratorRegex: RegExp;
-  defaultMethod: string;
-  methodGroup?: number;
-  methodFromGroup?: number; // methods=[...] list
-  pathGroup: number;
-  handlerGroup?: number;
-  findHandler?: boolean;
-  language: 'python';
-}
-
-function extractDecoratorRoutes(filePath: string, content: string, opts: DecoratorRouteOpts): FrameworkExtractionResult {
-  const nodes: Node[] = [];
-  const references: UnresolvedRef[] = [];
-  const now = Date.now();
-  let match: RegExpExecArray | null;
-  while ((match = opts.decoratorRegex.exec(content)) !== null) {
-    const routePath = match[opts.pathGroup];
-    let method = opts.defaultMethod;
-    if (opts.methodGroup && match[opts.methodGroup]) {
-      method = match[opts.methodGroup]!.toUpperCase();
-    } else if (opts.methodFromGroup && match[opts.methodFromGroup]) {
-      const m = match[opts.methodFromGroup]!.match(/['"]([A-Z]+)['"]/i);
-      if (m) method = m[1]!.toUpperCase();
-    }
-    const line = content.slice(0, match.index).split('\n').length;
-    const name = method ? `${method} ${routePath}` : routePath!;
-    const routeNode: Node = {
-      id: `route:${filePath}:${line}:${method}:${routePath}`,
-      kind: 'route',
-      name,
-      qualifiedName: `${filePath}::${method}:${routePath}`,
-      filePath,
-      startLine: line,
-      endLine: line,
-      startColumn: 0,
-      endColumn: match[0].length,
-      language: opts.language,
-      updatedAt: now,
-    };
-    nodes.push(routeNode);
-
-    let handlerName: string | undefined;
-    if (opts.handlerGroup && match[opts.handlerGroup]) {
-      handlerName = match[opts.handlerGroup];
-    } else if (opts.findHandler) {
-      const tail = content.slice(match.index + match[0].length);
-      const defMatch = tail.match(/\n\s*(?:async\s+)?def\s+(\w+)/);
-      if (defMatch) handlerName = defMatch[1];
-    }
-    if (handlerName) {
-      references.push({
-        fromNodeId: routeNode.id,
-        referenceName: handlerName,
-        referenceKind: 'references',
-        line,
-        column: 0,
-        filePath,
-        language: 'python',
-      });
-    }
-  }
-  return { nodes, references };
-}
-
-// Directory patterns
-const MODEL_DIRS = ['models', 'app/models', 'src/models'];
-const VIEW_DIRS = ['views', 'app/views', 'src/views', 'api/views'];
-const FORM_DIRS = ['forms', 'app/forms', 'src/forms'];
-const ROUTER_DIRS = ['/routers/', '/api/', '/routes/', '/endpoints/'];
-const DEP_DIRS = ['/dependencies/', '/deps/', '/core/'];
-
-const CLASS_KINDS = new Set(['class']);
-const VIEW_KINDS = new Set(['class', 'function']);
-const VARIABLE_KINDS = new Set(['variable']);
-const FUNCTION_KINDS = new Set(['function']);
-
-/**
- * Resolve a symbol by name using indexed queries instead of scanning all files.
- */
-function resolveByNameAndKind(
-  name: string,
-  kinds: Set<string>,
-  preferredDirPatterns: string[],
-  context: ResolutionContext,
-): string | null {
-  const candidates = context.getNodesByName(name);
-  if (candidates.length === 0) return null;
-
-  const kindFiltered = candidates.filter((n) => kinds.has(n.kind));
-  if (kindFiltered.length === 0) return null;
-
-  // Prefer candidates in framework-conventional directories
-  if (preferredDirPatterns.length > 0) {
-    const preferred = kindFiltered.filter((n) =>
-      preferredDirPatterns.some((d) => n.filePath.includes(d))
-    );
-    if (preferred.length > 0) return preferred[0]!.id;
-  }
-
-  // Fall back to any match
-  return kindFiltered[0]!.id;
-}

@@ -7,6 +7,65 @@ a [GitHub Release](https://github.com/colbymchenry/codegraph/releases) tagged
 This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0] - 2026-05-23
+
+### Added
+- **Spring DI dispatch resolution**: `@Autowired` / `@Inject` field
+  injection AND constructor injection (explicit `@Autowired` constructor
+  + Spring 4.3+ implicit single-constructor injection for
+  Spring-managed beans) resolve through the declared type to concrete
+  implementations via `implements` edges. Emits `references` edges with
+  `subkind='di_binding'`.
+- **Spring Temporal workflow / activity resolution**: `WorkflowStub`
+  / `ActivityStub` chained invocations
+  (`client.newWorkflowStub(MyWorkflow.class).execute()`) resolve to the
+  concrete `@WorkflowImpl` / `@ActivityImpl` method. Emits `calls`
+  edges with `subkind='temporal_dispatch'`.
+- **Generic Temporal resolver** (language-agnostic): covers Go
+  (`client.ExecuteWorkflow(ctx, opts, MyWorkflow)`), TypeScript
+  (`client.workflow.start(MyWorkflow, …)`), Python
+  (`client.start_workflow(MyWorkflow.run, …)`), and Java without
+  Spring. Fires only when the more specific `spring-temporal` resolver
+  doesn't apply, so the two never double-contribute.
+- **`node_tags` table** (schema v6): framework resolvers tag nodes with
+  framework roles — `spring:service`, `spring:component`, `spring:repository`,
+  `spring:configuration`, `spring:controller`, `react:hook`, `react:component`,
+  `aspnet:controller`, `django:view`, `laravel:controller`, `laravel:facade`,
+  `swiftui:view`, `swiftui:app`, `uikit:viewcontroller`, `uikit:uiview`,
+  `vapor:controller`, `express:middleware`, plus cross-framework
+  `route-handler` and `entry-point`. MCP `codegraph_search` accepts an
+  optional `tag` parameter to filter results.
+- **`codegraph status`** now reports per-framework edge contribution
+  counts. Counts membership in `provenances[]` (not primary
+  `provenance`), so SCIP-primary merged edges where a framework
+  resolver was a non-primary contributor still appear in the framework
+  count.
+
+### Changed
+- **Framework resolvers refactored to a `synthesize` / `augment` API**
+  that runs against the complete graph after static extraction. The
+  legacy per-file `extract` hook (formerly invoked from
+  `extractFromSource`) is removed; route / component / DI binding /
+  Temporal dispatch all run as a project-level Phase 3 pass after
+  reference resolution completes.
+- **Spring resolver split**: former monolithic `spring` is now
+  `spring-core` (`@RequestMapping` routes, `@Service`/`@Component`/`@Repository`/
+  `@Configuration`/`@Controller`/`@RestController` bean tagging, DI
+  dispatch) plus `spring-temporal` (workflow / activity dispatch).
+- Vue / Svelte / Rust intentionally retain a narrowed `resolve` hook
+  for framework-provided symbols (Vue 3 compiler macros, Nuxt
+  auto-imports, Svelte 5 runes, Cargo workspace module resolution)
+  that scope/import resolution cannot find. Per-ref by-name suffix
+  lookups are dropped from every resolver — covered by P0.5b scope
+  resolution for the languages it supports.
+
+### Notes
+- Existing framework resolver shapes preserved on the regression suite
+  — `__tests__/frameworks.test.ts` continues to cover every supported
+  resolver, with tests rewired from the legacy `extract` shape to
+  `synthesize`. Per-resolver worklogs at
+  `docs/plans/phase2/worklog/P1.5-*.md`.
+
 ## [0.7.12] - 2026-05-20
 
 ### Added

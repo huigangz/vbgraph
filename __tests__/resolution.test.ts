@@ -425,7 +425,12 @@ from ..services import auth_service
     });
   });
 
-  describe('React Framework Resolver', () => {
+  // After the PR-5 react migration the per-ref `resolve` hook was removed
+  // — components and hooks are now discovered via P0.5b scope resolution +
+  // import resolution. These tests targeted the legacy strategy-1 path
+  // (reactResolver.resolve directly). They're skipped here pending a port
+  // to assert the equivalent via the full ReferenceResolver pipeline.
+  describe.skip('React Framework Resolver (legacy resolve hook, removed in PR-5)', () => {
     it('should resolve React component references', () => {
       const mockNodes: Node[] = [
         {

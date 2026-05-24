@@ -13,11 +13,13 @@ import { svelteResolver } from './svelte';
 import { vueResolver } from './vue';
 import { djangoResolver, flaskResolver, fastapiResolver } from './python';
 import { railsResolver } from './ruby';
-import { springResolver } from './java';
+import { springCoreResolver } from './spring-core';
+import { springTemporalResolver } from './spring-temporal';
 import { goResolver } from './go';
 import { rustResolver } from './rust';
 import { aspnetResolver } from './csharp';
 import { swiftUIResolver, uikitResolver, vaporResolver } from './swift';
+import { temporalResolver } from './temporal';
 
 /**
  * All registered framework resolvers
@@ -37,7 +39,8 @@ const FRAMEWORK_RESOLVERS: FrameworkResolver[] = [
   // Ruby
   railsResolver,
   // Java
-  springResolver,
+  springCoreResolver,
+  springTemporalResolver,
   // Go
   goResolver,
   // Rust
@@ -48,6 +51,8 @@ const FRAMEWORK_RESOLVERS: FrameworkResolver[] = [
   swiftUIResolver,
   uikitResolver,
   vaporResolver,
+  // Temporal (cross-language, only fires when Spring is NOT detected)
+  temporalResolver,
 ];
 
 /**
@@ -102,6 +107,18 @@ export function registerFrameworkResolver(resolver: FrameworkResolver): void {
   FRAMEWORK_RESOLVERS.push(resolver);
 }
 
+/**
+ * Unregister a framework resolver by name. Returns true if a resolver was
+ * removed. Primarily used by tests that register a fake resolver and need
+ * to clean up; production code does not call this.
+ */
+export function unregisterFrameworkResolver(name: string): boolean {
+  const index = FRAMEWORK_RESOLVERS.findIndex((r) => r.name === name);
+  if (index === -1) return false;
+  FRAMEWORK_RESOLVERS.splice(index, 1);
+  return true;
+}
+
 // Re-export framework resolvers
 export { laravelResolver, FACADE_MAPPINGS } from './laravel';
 export { expressResolver } from './express';
@@ -110,8 +127,10 @@ export { svelteResolver } from './svelte';
 export { vueResolver } from './vue';
 export { djangoResolver, flaskResolver, fastapiResolver } from './python';
 export { railsResolver } from './ruby';
-export { springResolver } from './java';
+export { springCoreResolver } from './spring-core';
+export { springTemporalResolver } from './spring-temporal';
 export { goResolver } from './go';
 export { rustResolver } from './rust';
 export { aspnetResolver } from './csharp';
 export { swiftUIResolver, uikitResolver, vaporResolver } from './swift';
+export { temporalResolver } from './temporal';

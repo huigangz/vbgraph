@@ -25,7 +25,7 @@ editing code, not during.
 ## Tool selection by intent
 
 - **"How does X work? / trace X end to end / explain the Y system / architecture?"** → \`codegraph_explore\` (PRIMARY for understanding — seed it with the key symbol names, read its output, don't grep+Read your way there)
-- **"What is the symbol named X? / where is X defined?"** → \`codegraph_search\` (pinpoint lookups)
+- **"What is the symbol named X? / where is X defined?"** → \`codegraph_search\` (pinpoint lookups; pass \`tag\` to narrow by framework role — e.g. \`tag: 'spring:service'\`, \`tag: 'react:hook'\`, \`tag: 'route-handler'\`)
 - **"What's the deal with this task / feature / area?"** → \`codegraph_context\` (lighter composed view of search + node + callers + callees)
 - **"What calls this?"** → \`codegraph_callers\`
 - **"What does this call?"** → \`codegraph_callees\`

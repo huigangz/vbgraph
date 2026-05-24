@@ -1,17 +1,30 @@
 /**
- * Laravel Framework Resolver
+ * Laravel Framework Resolver — Phase 3 shape.
  *
- * Handles Laravel-specific patterns for reference resolution.
+ * `extract` → `synthesize`: routes from `routes/web.php` etc.
+ * `resolve` → `augment`: route→handler `references/convention` edges
+ * (handler is `Controller@method` or `[Controller::class, 'method']`)
+ * PLUS facade-call edges via the Phase 3 graph — for each `calls` edge
+ * whose target name is a Facade in `FACADE_MAPPINGS`, emit a
+ * `references/convention` edge from the caller to the facade's
+ * underlying-class node when present in the indexed code.
+ *
+ * The legacy by-name `Model::method` / `Controller@method` lookups
+ * (`resolveModelCall`, `resolveControllerMethod`) are dropped — they
+ * were heuristic file-path-convention lookups; augment's handler-name
+ * resolution covers the same cases more precisely when the controller
+ * exists in the graph.
  */
 
-import { Node } from '../../types';
-import { FrameworkResolver, UnresolvedRef, ResolvedRef, ResolutionContext } from '../types';
-import { stripCommentsForRegex } from '../strip-comments';
+import { Edge, Node } from '../../types';
+import {
+  AugmentResult,
+  FrameworkResolver,
+  ResolutionContext,
+  SynthesizeResult,
+} from '../types';
+import { GraphView } from '../graph-view';
 
-/**
- * Laravel facade mappings to underlying classes
- * Exported for potential use in facade resolution
- */
 export const FACADE_MAPPINGS: Record<string, string> = {
   Auth: 'Illuminate\\Auth\\AuthManager',
   Cache: 'Illuminate\\Cache\\CacheManager',
@@ -35,254 +48,195 @@ export const FACADE_MAPPINGS: Record<string, string> = {
   View: 'Illuminate\\View\\Factory',
 };
 
+const ROUTE_REGEX =
+  /Route::(get|post|put|patch|delete|options|any)\s*\(\s*['"]([^'"]+)['"]\s*,\s*([^)]+)\)/g;
+const RESOURCE_REGEX =
+  /Route::(resource|apiResource)\s*\(\s*['"]([^'"]+)['"]\s*(?:,\s*([^)]+))?\)/g;
+
 export const laravelResolver: FrameworkResolver = {
   name: 'laravel',
   languages: ['php'],
 
   detect(context: ResolutionContext): boolean {
-    // Check for artisan file (Laravel signature)
     return context.fileExists('artisan') || context.fileExists('app/Http/Kernel.php');
   },
 
-  resolve(ref: UnresolvedRef, context: ResolutionContext): ResolvedRef | null {
-    // Pattern 1: Model::method() - Eloquent static calls
-    const modelMatch = ref.referenceName.match(/^([A-Z][a-zA-Z]+)::(\w+)$/);
-    if (modelMatch) {
-      const [, className, methodName] = modelMatch;
-      const result = resolveModelCall(className!, methodName!, context);
-      if (result) {
-        return {
-          original: ref,
-          targetNodeId: result,
-          confidence: 0.85,
-          resolvedBy: 'framework',
-        };
-      }
-    }
-
-    // Pattern 2: Facade calls - Auth::user(), Cache::get()
-    const facadeMatch = ref.referenceName.match(/^(Auth|Cache|DB|Log|Mail|Queue|Session|Storage|Validator|Route|Request|Response)::(\w+)$/);
-    if (facadeMatch) {
-      // Facades typically resolve to external Laravel code
-      // Mark as external but note the facade
-      return null; // External, can't resolve to local node
-    }
-
-    // Pattern 3: Helper function calls - route(), view(), config()
-    if (['route', 'view', 'config', 'env', 'app', 'abort', 'redirect', 'response', 'request', 'session', 'url', 'asset', 'mix'].includes(ref.referenceName)) {
-      // These are Laravel helpers - external
-      return null;
-    }
-
-    // Pattern 4: Controller method references
-    const controllerMatch = ref.referenceName.match(/^([A-Z][a-zA-Z]+Controller)@(\w+)$/);
-    if (controllerMatch) {
-      const [, controller, method] = controllerMatch;
-      const result = resolveControllerMethod(controller!, method!, context);
-      if (result) {
-        return {
-          original: ref,
-          targetNodeId: result,
-          confidence: 0.9,
-          resolvedBy: 'framework',
-        };
-      }
-    }
-
-    return null;
-  },
-
-  extract(filePath, content) {
-    if (!filePath.endsWith('.php')) return { nodes: [], references: [] };
+  synthesize(graph: GraphView): SynthesizeResult {
     const nodes: Node[] = [];
-    const references: UnresolvedRef[] = [];
     const now = Date.now();
-    const safe = stripCommentsForRegex(content, 'php');
 
-    // Route::METHOD('/path', handler-expr)
-    // handler-expr can be: [Class::class, 'method'] | 'Controller@method' | Closure | Class::class
-    const routeRegex = /Route::(get|post|put|patch|delete|options|any)\s*\(\s*['"]([^'"]+)['"]\s*,\s*([^)]+)\)/g;
-    let match: RegExpExecArray | null;
-    while ((match = routeRegex.exec(safe)) !== null) {
-      const [, method, routePath, handlerExpr] = match;
-      const line = safe.slice(0, match.index).split('\n').length;
-      const upper = method!.toUpperCase();
-      const routeNode: Node = {
-        id: `route:${filePath}:${line}:${upper}:${routePath}`,
-        kind: 'route',
-        name: `${upper} ${routePath}`,
-        qualifiedName: `${filePath}::route:${routePath}`,
-        filePath,
-        startLine: line,
-        endLine: line,
-        startColumn: 0,
-        endColumn: match[0].length,
-        language: 'php',
-        updatedAt: now,
-      };
-      nodes.push(routeNode);
+    for (const file of graph.getAllFiles()) {
+      if (!file.endsWith('.php')) continue;
+      const safe = graph.readFileStripped(file, 'php');
+      if (!safe) continue;
 
-      const handlerName = extractLaravelHandler(handlerExpr!);
-      if (handlerName) {
-        references.push({
-          fromNodeId: routeNode.id,
-          referenceName: handlerName,
-          referenceKind: 'references',
-          line,
-          column: 0,
-          filePath,
+      ROUTE_REGEX.lastIndex = 0;
+      let match: RegExpExecArray | null;
+      while ((match = ROUTE_REGEX.exec(safe)) !== null) {
+        const [, method, routePath] = match;
+        const line = safe.slice(0, match.index).split('\n').length;
+        const upper = method!.toUpperCase();
+        nodes.push({
+          id: `framework:laravel:route:${file}:${line}:${upper}:${routePath}`,
+          kind: 'route',
+          name: `${upper} ${routePath}`,
+          qualifiedName: `${file}::route:${routePath}`,
+          filePath: file,
+          startLine: line,
+          endLine: line,
+          startColumn: 0,
+          endColumn: match[0].length,
           language: 'php',
+          provenance: 'framework:laravel',
+          updatedAt: now,
+        });
+      }
+
+      RESOURCE_REGEX.lastIndex = 0;
+      while ((match = RESOURCE_REGEX.exec(safe)) !== null) {
+        const [, _fn, resourceName] = match;
+        const line = safe.slice(0, match.index).split('\n').length;
+        nodes.push({
+          id: `framework:laravel:resource:${file}:${line}:${resourceName}`,
+          kind: 'route',
+          name: `resource:${resourceName}`,
+          qualifiedName: `${file}::route:${resourceName}`,
+          filePath: file,
+          startLine: line,
+          endLine: line,
+          startColumn: 0,
+          endColumn: match[0].length,
+          language: 'php',
+          provenance: 'framework:laravel',
+          updatedAt: now,
         });
       }
     }
 
-    // Route::resource('name', Controller::class) / Route::apiResource('name', Controller::class)
-    const resourceRegex = /Route::(resource|apiResource)\s*\(\s*['"]([^'"]+)['"]\s*(?:,\s*([^)]+))?\)/g;
-    while ((match = resourceRegex.exec(safe)) !== null) {
-      const [, _fn, resourceName, handlerExpr] = match;
-      const line = safe.slice(0, match.index).split('\n').length;
-      const routeNode: Node = {
-        id: `route:${filePath}:${line}:RESOURCE:${resourceName}`,
-        kind: 'route',
-        name: `resource:${resourceName}`,
-        qualifiedName: `${filePath}::route:${resourceName}`,
-        filePath,
-        startLine: line,
-        endLine: line,
-        startColumn: 0,
-        endColumn: match[0].length,
-        language: 'php',
-        updatedAt: now,
-      };
-      nodes.push(routeNode);
+    return { nodes };
+  },
 
-      if (handlerExpr) {
-        const controllerName = extractLaravelHandler(handlerExpr);
-        if (controllerName) {
-          references.push({
-            fromNodeId: routeNode.id,
-            referenceName: controllerName,
-            referenceKind: 'imports',
-            line,
-            column: 0,
-            filePath,
-            language: 'php',
-          });
+  augment(graph: GraphView): AugmentResult {
+    const edges: Edge[] = [];
+    const tags: Array<{ nodeId: string; tags: string[] }> = [];
+
+    // Route → handler convention edges.
+    for (const route of graph.getNodesByKind('route')) {
+      if (route.provenance !== 'framework:laravel') continue;
+      const safe = graph.readFileStripped(route.filePath, 'php');
+      if (!safe) continue;
+      const lineText = safe.split('\n')[route.startLine - 1];
+      if (!lineText) continue;
+
+      const m =
+        lineText.match(
+          /Route::(?:get|post|put|patch|delete|options|any)\s*\(\s*['"][^'"]+['"]\s*,\s*([^)]+)\)/,
+        ) ||
+        lineText.match(
+          /Route::(?:resource|apiResource)\s*\(\s*['"][^'"]+['"]\s*,\s*([^)]+)\)/,
+        );
+      if (!m) continue;
+      const handler = extractLaravelHandler(m[1]!);
+      if (!handler) continue;
+
+      // Look up handler. For `Controller@method` and `[Class::class, 'method']`,
+      // `extractLaravelHandler` returns the method name. For `Class::class`
+      // (resource shape), it returns the class name.
+      const handlerName = handler.name;
+      const kindFilter: Array<'class' | 'method' | 'function'> = handler.isMethod
+        ? ['method', 'function']
+        : ['class'];
+      const candidates = graph
+        .getNodesByName(handlerName)
+        .filter((n) => (kindFilter as string[]).includes(n.kind));
+      if (candidates.length === 0) continue;
+
+      let preferred = candidates.filter((n) => n.filePath.includes('Controllers'));
+      if (preferred.length === 0) preferred = candidates;
+      if (preferred.length !== 1) continue;
+      const target = preferred[0]!;
+
+      edges.push({
+        source: route.id,
+        target: target.id,
+        kind: 'references',
+        subkind: 'convention',
+        line: undefined,
+        column: undefined,
+        provenance: 'framework:laravel',
+        confidence: 0.85,
+      });
+      tags.push({ nodeId: target.id, tags: ['laravel:controller', 'route-handler'] });
+    }
+
+    // Facade resolution upgrade: a `calls` edge whose target node is a method
+    // on a Laravel Facade (target's parent class name is in FACADE_MAPPINGS)
+    // gets a `references/convention` edge from the caller to the facade's
+    // underlying class IF the class is present in the indexed graph (i.e.
+    // user-vendored Illuminate or a local stub).
+    //
+    // We deliberately don't try to walk container bindings; that's a runtime
+    // concern. This is the static name-based upgrade.
+    const facadeNames = new Set(Object.keys(FACADE_MAPPINGS));
+    for (const facade of facadeNames) {
+      const facadeClassNodes = graph
+        .getNodesByName(facade)
+        .filter((n) => n.kind === 'class');
+      if (facadeClassNodes.length === 0) continue;
+      // Look up the underlying class by last namespace segment.
+      const underlyingFqn = FACADE_MAPPINGS[facade]!;
+      const underlyingShortName = underlyingFqn.split('\\').pop()!;
+      const underlying = graph
+        .getNodesByName(underlyingShortName)
+        .find((n) => n.kind === 'class');
+      if (!underlying) continue;
+
+      for (const facadeClass of facadeClassNodes) {
+        // Every incoming `calls` edge to a method of this facade class gets
+        // a matching convention edge to the underlying.
+        const facadeMethods = graph
+          .getNodesByFile(facadeClass.filePath)
+          .filter((n) => n.kind === 'method');
+        for (const method of facadeMethods) {
+          for (const inEdge of graph.getIncomingEdges(method.id, ['calls'])) {
+            edges.push({
+              source: inEdge.source,
+              target: underlying.id,
+              kind: 'references',
+              subkind: 'convention',
+              line: undefined,
+              column: undefined,
+              provenance: 'framework:laravel',
+              confidence: 0.85,
+            });
+          }
         }
+        tags.push({ nodeId: facadeClass.id, tags: ['laravel:facade'] });
       }
     }
 
-    return { nodes, references };
+    return { edges, tags };
   },
 };
 
-/**
- * Parse a Laravel route handler expression and return the symbol to link.
- *  - `[Class::class, 'method']`  -> `method`
- *  - `'Controller@method'`       -> `method`
- *  - `Class::class`              -> `Class`
- *  - anything else (closure etc) -> null
- */
-function extractLaravelHandler(expr: string): string | null {
+interface ParsedHandler {
+  name: string;
+  /** `[Class::class, 'method']` and `'Controller@method'` produce method names;
+   *  `Class::class` (resource shape) produces a class name. */
+  isMethod: boolean;
+}
+
+function extractLaravelHandler(expr: string): ParsedHandler | null {
   const trimmed = expr.trim();
 
-  // [Class::class, 'method'] — grab the string literal
   const tupleMatch = trimmed.match(/^\[\s*[^,]+,\s*['"]([^'"]+)['"]\s*\]/);
-  if (tupleMatch) return tupleMatch[1]!;
+  if (tupleMatch) return { name: tupleMatch[1]!, isMethod: true };
 
-  // 'Controller@method'
   const atMatch = trimmed.match(/^['"]([^'"@]+)@([^'"]+)['"]$/);
-  if (atMatch) return atMatch[2]!;
+  if (atMatch) return { name: atMatch[2]!, isMethod: true };
 
-  // Controller::class
   const classMatch = trimmed.match(/^([A-Za-z_][A-Za-z0-9_]*)::class/);
-  if (classMatch) return classMatch[1]!;
-
-  return null;
-}
-
-/**
- * Resolve a Model::method() call
- */
-function resolveModelCall(
-  className: string,
-  methodName: string,
-  context: ResolutionContext
-): string | null {
-  // Try app/Models/ first (Laravel 8+)
-  let modelPath = `app/Models/${className}.php`;
-  if (context.fileExists(modelPath)) {
-    const nodes = context.getNodesInFile(modelPath);
-    // Look for the method in this class
-    const methodNode = nodes.find(
-      (n) => n.kind === 'method' && n.name === methodName
-    );
-    if (methodNode) {
-      return methodNode.id;
-    }
-    // Return the class itself if method not found
-    const classNode = nodes.find(
-      (n) => n.kind === 'class' && n.name === className
-    );
-    if (classNode) {
-      return classNode.id;
-    }
-  }
-
-  // Try app/ (Laravel 7 and below)
-  modelPath = `app/${className}.php`;
-  if (context.fileExists(modelPath)) {
-    const nodes = context.getNodesInFile(modelPath);
-    const methodNode = nodes.find(
-      (n) => n.kind === 'method' && n.name === methodName
-    );
-    if (methodNode) {
-      return methodNode.id;
-    }
-    const classNode = nodes.find(
-      (n) => n.kind === 'class' && n.name === className
-    );
-    if (classNode) {
-      return classNode.id;
-    }
-  }
-
-  return null;
-}
-
-/**
- * Resolve a Controller@method reference
- */
-function resolveControllerMethod(
-  controller: string,
-  method: string,
-  context: ResolutionContext
-): string | null {
-  // Try app/Http/Controllers/
-  const controllerPath = `app/Http/Controllers/${controller}.php`;
-  if (context.fileExists(controllerPath)) {
-    const nodes = context.getNodesInFile(controllerPath);
-    const methodNode = nodes.find(
-      (n) => n.kind === 'method' && n.name === method
-    );
-    if (methodNode) {
-      return methodNode.id;
-    }
-  }
-
-  // Try name-based lookup for namespaced controllers
-  const controllerCandidates = context.getNodesByName(controller);
-  for (const ctrl of controllerCandidates) {
-    if (ctrl.kind === 'class' && ctrl.filePath.includes('Controllers')) {
-      const nodesInFile = context.getNodesInFile(ctrl.filePath);
-      const methodNode = nodesInFile.find(
-        (n) => n.kind === 'method' && n.name === method
-      );
-      if (methodNode) {
-        return methodNode.id;
-      }
-    }
-  }
+  if (classMatch) return { name: classMatch[1]!, isMethod: false };
 
   return null;
 }

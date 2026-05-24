@@ -511,7 +511,7 @@ export class QueryBuilder {
    * 3. Score results based on match quality
    */
   searchNodes(query: string, options: SearchOptions = {}): SearchResult[] {
-    const { limit = 100, offset = 0 } = options;
+    const { limit = 100, offset = 0, tag } = options;
 
     // Parse field-qualified bits out of the raw query (kind:, lang:,
     // path:, name:). Anything not recognised stays in `text` and goes
@@ -538,16 +538,16 @@ export class QueryBuilder {
 
     // First try FTS5 with prefix matching
     let results = text
-      ? this.searchNodesFTS(text, { kinds, languages, limit, offset })
+      ? this.searchNodesFTS(text, { kinds, languages, limit, offset, tag })
       // Over-fetch by 5× when running filter-only (no text). The
       // post-scoring path: + name: filters can be very selective, so
       // a smaller multiplier risks returning fewer than `limit`
       // results despite the DB having plenty of matches.
-      : this.searchAllByFilters({ kinds, languages, limit: limit * 5 });
+      : this.searchAllByFilters({ kinds, languages, limit: limit * 5, tag });
 
     // If no FTS results, try LIKE-based substring search
     if (results.length === 0 && text.length >= 2) {
-      results = this.searchNodesLike(text, { kinds, languages, limit, offset });
+      results = this.searchNodesLike(text, { kinds, languages, limit, offset, tag });
     }
 
     // Final fuzzy fallback: scan all known names and keep those within
@@ -555,7 +555,7 @@ export class QueryBuilder {
     // returned nothing AND there's a text portion long enough to be
     // worth fuzzing (1-char queries would match too much).
     if (results.length === 0 && text.length >= 3) {
-      results = this.searchNodesFuzzy(text, { kinds, languages, limit });
+      results = this.searchNodesFuzzy(text, { kinds, languages, limit, tag });
     }
 
     // Supplement: ensure exact name matches are always candidates.
@@ -569,14 +569,20 @@ export class QueryBuilder {
       const maxFtsScore = Math.max(...results.map(r => r.score));
       const terms = query.split(/\s+/).filter(t => t.length >= 2);
       for (const term of terms) {
-        let sql = 'SELECT * FROM nodes WHERE name = ? COLLATE NOCASE';
-        const params: (string | number)[] = [term];
+        let sql = 'SELECT nodes.* FROM nodes';
+        const params: (string | number)[] = [];
+        if (tag) {
+          sql += ' INNER JOIN node_tags ON node_tags.node_id = nodes.id AND node_tags.tag = ?';
+          params.push(tag);
+        }
+        sql += ' WHERE nodes.name = ? COLLATE NOCASE';
+        params.push(term);
         if (kinds && kinds.length > 0) {
-          sql += ` AND kind IN (${kinds.map(() => '?').join(',')})`;
+          sql += ` AND nodes.kind IN (${kinds.map(() => '?').join(',')})`;
           params.push(...kinds);
         }
         if (languages && languages.length > 0) {
-          sql += ` AND language IN (${languages.map(() => '?').join(',')})`;
+          sql += ` AND nodes.language IN (${languages.map(() => '?').join(',')})`;
           params.push(...languages);
         }
         sql += ' LIMIT 20';
@@ -639,19 +645,25 @@ export class QueryBuilder {
     kinds?: NodeKind[];
     languages?: Language[];
     limit: number;
+    tag?: string;
   }): SearchResult[] {
-    const { kinds, languages, limit } = options;
-    let sql = 'SELECT * FROM nodes WHERE 1=1';
+    const { kinds, languages, limit, tag } = options;
+    let sql = 'SELECT nodes.* FROM nodes';
     const params: (string | number)[] = [];
+    if (tag) {
+      sql += ' INNER JOIN node_tags ON node_tags.node_id = nodes.id AND node_tags.tag = ?';
+      params.push(tag);
+    }
+    sql += ' WHERE 1=1';
     if (kinds && kinds.length > 0) {
-      sql += ` AND kind IN (${kinds.map(() => '?').join(',')})`;
+      sql += ` AND nodes.kind IN (${kinds.map(() => '?').join(',')})`;
       params.push(...kinds);
     }
     if (languages && languages.length > 0) {
-      sql += ` AND language IN (${languages.map(() => '?').join(',')})`;
+      sql += ` AND nodes.language IN (${languages.map(() => '?').join(',')})`;
       params.push(...languages);
     }
-    sql += ' ORDER BY name LIMIT ?';
+    sql += ' ORDER BY nodes.name LIMIT ?';
     params.push(limit);
     const rows = this.db.prepare(sql).all(...params) as NodeRow[];
     return rows.map((row) => ({ node: rowToNode(row), score: 1 }));
@@ -667,9 +679,9 @@ export class QueryBuilder {
    */
   private searchNodesFuzzy(
     text: string,
-    options: { kinds?: NodeKind[]; languages?: Language[]; limit: number }
+    options: { kinds?: NodeKind[]; languages?: Language[]; limit: number; tag?: string }
   ): SearchResult[] {
-    const { kinds, languages, limit } = options;
+    const { kinds, languages, limit, tag } = options;
     const lowered = text.toLowerCase();
     const maxDist = lowered.length <= 4 ? 1 : 2;
 
@@ -697,14 +709,20 @@ export class QueryBuilder {
     const seen = new Set<string>();
     for (const c of cappedCandidates) {
       if (results.length >= limit) break;
-      let sql = 'SELECT * FROM nodes WHERE name = ?';
-      const params: (string | number)[] = [c.name];
+      let sql = 'SELECT nodes.* FROM nodes';
+      const params: (string | number)[] = [];
+      if (tag) {
+        sql += ' INNER JOIN node_tags ON node_tags.node_id = nodes.id AND node_tags.tag = ?';
+        params.push(tag);
+      }
+      sql += ' WHERE nodes.name = ?';
+      params.push(c.name);
       if (kinds && kinds.length > 0) {
-        sql += ` AND kind IN (${kinds.map(() => '?').join(',')})`;
+        sql += ` AND nodes.kind IN (${kinds.map(() => '?').join(',')})`;
         params.push(...kinds);
       }
       if (languages && languages.length > 0) {
-        sql += ` AND language IN (${languages.map(() => '?').join(',')})`;
+        sql += ` AND nodes.language IN (${languages.map(() => '?').join(',')})`;
         params.push(...languages);
       }
       sql += ' LIMIT 5';
@@ -725,7 +743,7 @@ export class QueryBuilder {
    * FTS5 search with prefix matching
    */
   private searchNodesFTS(query: string, options: SearchOptions): SearchResult[] {
-    const { kinds, languages, limit = 100, offset = 0 } = options;
+    const { kinds, languages, limit = 100, offset = 0, tag } = options;
 
     // Add prefix wildcard for better matching (e.g., "auth" matches "AuthService", "authenticate")
     // Escape special FTS5 characters and add prefix wildcard.
@@ -759,10 +777,22 @@ export class QueryBuilder {
       SELECT nodes.*, bm25(nodes_fts, 0, 20, 5, 1, 2) as score
       FROM nodes_fts
       JOIN nodes ON nodes_fts.id = nodes.id
-      WHERE nodes_fts MATCH ?
     `;
 
-    const params: (string | number)[] = [ftsQuery];
+    const params: (string | number)[] = [];
+
+    // Pushing the tag filter into the candidate query (rather than
+    // post-filtering after the FTS limit) ensures we don't silently drop
+    // tagged matches ranked outside the FTS window. With a large repo and
+    // a heavily ranked untagged query, those drops would manifest as
+    // false-negative `tag: 'x'` results.
+    if (tag) {
+      sql += ' INNER JOIN node_tags ON node_tags.node_id = nodes.id AND node_tags.tag = ?';
+      params.push(tag);
+    }
+
+    sql += ' WHERE nodes_fts MATCH ?';
+    params.push(ftsQuery);
 
     if (kinds && kinds.length > 0) {
       sql += ` AND nodes.kind IN (${kinds.map(() => '?').join(',')})`;
@@ -794,23 +824,18 @@ export class QueryBuilder {
    * Useful for camelCase matching (e.g., "signIn" finds "signInWithGoogle")
    */
   private searchNodesLike(query: string, options: SearchOptions): SearchResult[] {
-    const { kinds, languages, limit = 100, offset = 0 } = options;
+    const { kinds, languages, limit = 100, offset = 0, tag } = options;
 
     let sql = `
       SELECT nodes.*,
         CASE
-          WHEN name = ? THEN 1.0
-          WHEN name LIKE ? THEN 0.9
-          WHEN name LIKE ? THEN 0.8
-          WHEN qualified_name LIKE ? THEN 0.7
+          WHEN nodes.name = ? THEN 1.0
+          WHEN nodes.name LIKE ? THEN 0.9
+          WHEN nodes.name LIKE ? THEN 0.8
+          WHEN nodes.qualified_name LIKE ? THEN 0.7
           ELSE 0.5
         END as score
       FROM nodes
-      WHERE (
-        name LIKE ? OR
-        qualified_name LIKE ? OR
-        name LIKE ?
-      )
     `;
 
     // Pattern variants for better matching
@@ -823,22 +848,37 @@ export class QueryBuilder {
       startsWith,     // Starts with score
       contains,       // Contains score
       contains,       // Qualified name score
+    ];
+
+    if (tag) {
+      sql += ' INNER JOIN node_tags ON node_tags.node_id = nodes.id AND node_tags.tag = ?';
+      params.push(tag);
+    }
+
+    sql += `
+      WHERE (
+        nodes.name LIKE ? OR
+        nodes.qualified_name LIKE ? OR
+        nodes.name LIKE ?
+      )
+    `;
+    params.push(
       contains,       // WHERE: name contains
       contains,       // WHERE: qualified_name contains
       startsWith,     // WHERE: name starts with
-    ];
+    );
 
     if (kinds && kinds.length > 0) {
-      sql += ` AND kind IN (${kinds.map(() => '?').join(',')})`;
+      sql += ` AND nodes.kind IN (${kinds.map(() => '?').join(',')})`;
       params.push(...kinds);
     }
 
     if (languages && languages.length > 0) {
-      sql += ` AND language IN (${languages.map(() => '?').join(',')})`;
+      sql += ` AND nodes.language IN (${languages.map(() => '?').join(',')})`;
       params.push(...languages);
     }
 
-    sql += ' ORDER BY score DESC, length(name) ASC LIMIT ? OFFSET ?';
+    sql += ' ORDER BY score DESC, length(nodes.name) ASC LIMIT ? OFFSET ?';
     params.push(limit, offset);
 
     const rows = this.db.prepare(sql).all(...params) as (NodeRow & { score: number })[];
@@ -1183,6 +1223,178 @@ export class QueryBuilder {
       .prepare(`SELECT * FROM edges WHERE provenances LIKE '%"' || ? || '"%'`)
       .all(p) as EdgeRow[];
     return rows.map(rowToEdge);
+  }
+
+  // ===========================================================================
+  // Phase 3 — node_tags + framework purge + transaction wrapper
+  // ===========================================================================
+
+  /**
+   * Attach a tag to a node. First-writer-wins on `added_by` (mirrors
+   * `pickPrimaryProvenance` for equal-rank provenances). Duplicate
+   * (node_id, tag) pairs are silently ignored.
+   *
+   * Caller is responsible for tag-format validation (see isValidTagFormat in
+   * Phase3Orchestrator) and for ensuring the node exists. A FK violation here
+   * surfaces as a thrown error.
+   */
+  insertNodeTag(nodeId: string, tag: string, addedBy: string): void {
+    this.db.prepare(
+      `INSERT OR IGNORE INTO node_tags (node_id, tag, added_by) VALUES (?, ?, ?)`,
+    ).run(nodeId, tag, addedBy);
+  }
+
+  /** All nodes carrying the given tag. */
+  getNodesByTag(tag: string): Node[] {
+    const rows = this.db.prepare(
+      `SELECT n.* FROM nodes n
+       INNER JOIN node_tags t ON t.node_id = n.id
+       WHERE t.tag = ?`,
+    ).all(tag) as NodeRow[];
+    return rows.map(rowToNode);
+  }
+
+  /**
+   * Run `fn` inside a single transaction and return its result. Thin delegate
+   * to the underlying adapter (`better-sqlite3.transaction(fn)()` /
+   * `WasmDatabaseAdapter.transaction`). Phase 3 uses this as its sole
+   * transaction boundary; do NOT nest other transaction-opening helpers
+   * inside `fn` — `node-sqlite3-wasm` uses raw `BEGIN`/`COMMIT` and nesting
+   * fails.
+   */
+  transaction<T>(fn: () => T): T {
+    return this.db.transaction(fn)();
+  }
+
+  /**
+   * STAGE 0 SQL 0.1 — strip framework contributions from every edge.
+   *
+   * For each edge whose `provenances[]` contains any `framework:*` entry:
+   *   - If at least one non-framework provenance survives → strip framework
+   *     from `provenances[]`, recompute `provenance` to the highest-rank
+   *     surviving provenance (via `pickPrimaryProvenance`), and recompute
+   *     `confidence` to `max(defaultConfidence(p) for p in survivors)`.
+   *   - If no non-framework provenance survives → delete the edge row.
+   *
+   * Done row-by-row in TypeScript because we need to compute the primary
+   * survivor (which mirrors `pickPrimaryProvenance` priorities) and write
+   * a JSON array — both awkward in pure SQL across the two adapters.
+   * Real workloads have framework contributors on a small fraction of
+   * edges, so this is O(framework-edge-count), not O(total-edges).
+   *
+   * Critically handles the merged-edge case where framework is the primary
+   * provenance because it outranks a non-framework contributor — e.g.
+   * `heuristic` (rank 50) + `framework:x` (rank 60) → primary is framework,
+   * but `heuristic` is a load-bearing static contributor that must NOT be
+   * dropped. The earlier sketch deleted these rows wholesale; this version
+   * preserves the static contribution by demoting the row to a non-framework
+   * primary.
+   *
+   * `metadata` is NOT touched here — framework augmenters are forbidden from
+   * writing metadata (see plan "Edge metadata ownership"); Phase3Orchestrator's
+   * edge pre-flight enforces that contract on the write side.
+   */
+  stripFrameworkContributionsFromEdges(): void {
+    // First-pass: a LIKE pre-filter narrows the row scan; the precise JSON
+    // parse happens in JS. Empty/NULL provenances[] rows can't match because
+    // the LIKE requires a `framework:` substring.
+    const candidates = this.db
+      .prepare(
+        `SELECT id, provenance, provenances FROM edges
+         WHERE provenances LIKE '%framework:%'`,
+      )
+      .all() as Array<{ id: number; provenance: string | null; provenances: string | null }>;
+
+    if (candidates.length === 0) return;
+
+    const updateStmt = this.db.prepare(
+      `UPDATE edges
+          SET provenance = ?, provenances = ?, confidence = ?
+        WHERE id = ?`,
+    );
+    const deleteStmt = this.db.prepare(`DELETE FROM edges WHERE id = ?`);
+
+    for (const row of candidates) {
+      if (!row.provenances) continue;
+      let provs: GraphProvenance[];
+      try {
+        provs = JSON.parse(row.provenances) as GraphProvenance[];
+      } catch {
+        continue;
+      }
+      const survivors = provs.filter((p) => !p.startsWith('framework:'));
+      if (survivors.length === 0) {
+        deleteStmt.run(row.id);
+        continue;
+      }
+      // If neither the primary nor any provenance changed, skip the write.
+      if (survivors.length === provs.length) continue;
+      const primary = pickPrimaryProvenance(survivors);
+      const confidence = Math.max(...survivors.map((p) => defaultConfidence(p)));
+      updateStmt.run(primary, JSON.stringify(survivors), confidence, row.id);
+    }
+  }
+
+  /** STAGE 0 SQL 0.2 — delete every tag written by any framework resolver. */
+  deleteAllFrameworkTags(): void {
+    this.db.exec(`DELETE FROM node_tags WHERE added_by LIKE 'framework:%'`);
+  }
+
+  /**
+   * STAGE 0 SQL 0.3 — safety net for edges whose primary is `framework:*`
+   * but whose `provenances[]` is NULL or empty (shouldn't happen via the
+   * upsert path, but possible from legacy migrations or direct writes).
+   * `stripFrameworkContributionsFromEdges` handles the well-formed case
+   * (deletes framework-only edges); this catches malformed rows.
+   */
+  deleteFrameworkPrimaryEdges(): void {
+    this.db.exec(`DELETE FROM edges WHERE provenance LIKE 'framework:%'`);
+  }
+
+  /** STAGE 0 SQL 0.4 — delete nodes whose provenance is framework-owned. */
+  deleteFrameworkNodes(): void {
+    this.db.exec(`DELETE FROM nodes WHERE provenance LIKE 'framework:%'`);
+  }
+
+  /**
+   * For each `framework:<name>` provenance ever observed on an edge,
+   * return the count of distinct edges in which that provenance
+   * contributes (counts membership in `provenances[]`, NOT primary
+   * `provenance`). Used by `codegraph status` per ship gate 9 so
+   * SCIP-primary edges merged with a framework contribution still
+   * appear in the per-framework count.
+   */
+  getFrameworkEdgeContributionCounts(): Record<string, number> {
+    // `json_each` exposes its own `id` column, so the unqualified `id` in
+    // `COUNT(DISTINCT id)` is ambiguous and errors at runtime. Qualify
+    // with `edges.id`.
+    const rows = this.db
+      .prepare(
+        `SELECT value AS provenance, COUNT(DISTINCT edges.id) AS edge_count
+         FROM edges, json_each(edges.provenances)
+         WHERE value LIKE 'framework:%'
+         GROUP BY value
+         ORDER BY value`,
+      )
+      .all() as Array<{ provenance: string; edge_count: number }>;
+    const out: Record<string, number> = {};
+    for (const row of rows) {
+      out[row.provenance.replace(/^framework:/, '')] = row.edge_count;
+    }
+    return out;
+  }
+
+  /**
+   * Flush QueryBuilder-level caches that could hold framework-derived rows.
+   * Called by Phase3Orchestrator after STAGE 0 purge and after STAGE B writes
+   * so that subsequent reads (and view construction) observe the fresh state.
+   *
+   * Raw-SQL DELETE / UPDATE in the purge helpers bypasses the cache
+   * invalidation that `insertNode` / `updateNode` / `deleteNode` perform
+   * inline. This is the explicit flush.
+   */
+  invalidatePhase3Caches(): void {
+    this.nodeCache.clear();
   }
 
   // ===========================================================================

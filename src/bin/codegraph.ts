@@ -737,6 +737,8 @@ program
       const changes = cg.getChangedFiles();
       const backend = cg.getBackend();
 
+      const frameworks = cg.getFrameworkEdgeContributionCounts();
+
       // JSON output mode
       if (options.json) {
         console.log(JSON.stringify({
@@ -749,6 +751,7 @@ program
           backend,
           nodesByKind: stats.nodesByKind,
           languages: Object.entries(stats.filesByLanguage).filter(([, count]) => count > 0).map(([lang]) => lang),
+          frameworks,
           pendingChanges: {
             added: changes.added.length,
             modified: changes.modified.length,
@@ -800,6 +803,18 @@ program
         console.log(`  ${lang.padEnd(15)} ${formatNumber(count)}`);
       }
       console.log();
+
+      // Frameworks (Phase 3 contributions). Counts membership in
+      // `provenances[]`, NOT primary `provenance`, so SCIP-primary merged
+      // edges still appear here when a framework resolver also contributed.
+      const frameworkEntries = Object.entries(frameworks).sort((a, b) => b[1] - a[1]);
+      if (frameworkEntries.length > 0) {
+        console.log(chalk.bold('Frameworks (edge contributions):'));
+        for (const [name, count] of frameworkEntries) {
+          console.log(`  ${name.padEnd(15)} ${formatNumber(count)}`);
+        }
+        console.log();
+      }
 
       // Pending changes
       const totalChanges = changes.added.length + changes.modified.length + changes.removed.length;
