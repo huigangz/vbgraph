@@ -15,6 +15,7 @@ import {
   Language,
   GraphProvenance,
   GraphStats,
+  StaleSummary,
   SearchOptions,
   SearchResult,
   pickPrimaryProvenance,
@@ -51,6 +52,10 @@ interface NodeRow {
   provenance: string | null;
   scip_symbol: string | null;
   scip_index_path: string | null;
+  // P2.1 staleness columns. Default 0 from schema v5; flipped to 1 only by
+  // P2.2's sync write helpers (markScipFileStale / bulkMarkScipFilesStale).
+  stale: number;
+  staleness_visible: number;
   updated_at: number;
 }
 
@@ -66,6 +71,9 @@ interface EdgeRow {
   provenances: string | null;
   confidence: number | null;
   subkind: string | null;
+  // P2.1 staleness columns (source-only marking per design doc Decision 2).
+  stale: number;
+  staleness_visible: number;
 }
 
 interface FileRow {
@@ -118,6 +126,12 @@ function rowToNode(row: NodeRow): Node {
     provenance: row.provenance ? (row.provenance as GraphProvenance) : undefined,
     scipSymbol: row.scip_symbol ?? undefined,
     scipIndexPath: row.scip_index_path ?? undefined,
+    // Derived public boolean: true only for visible-but-stale rows.
+    // Hidden-stale (stale=1, staleness_visible=0) is filtered out by the
+    // default query predicate, so it never reaches this conversion.
+    // Visible-stale (stale=1, staleness_visible=1) sets the flag; fresh
+    // (stale=0) leaves it undefined to avoid serialization noise.
+    stale: row.stale === 1 && row.staleness_visible === 1 ? true : undefined,
     updatedAt: row.updated_at,
   };
 }
@@ -139,6 +153,8 @@ function rowToEdge(row: EdgeRow): Edge {
       : undefined,
     confidence: row.confidence ?? undefined,
     subkind: row.subkind ?? undefined,
+    // Same derivation as Node.stale — visible-stale only.
+    stale: row.stale === 1 && row.staleness_visible === 1 ? true : undefined,
   };
 }
 
@@ -156,6 +172,79 @@ function rowToFileRecord(row: FileRow): FileRecord {
     nodeCount: row.node_count,
     errors: row.errors ? safeJsonParse(row.errors, undefined) : undefined,
   };
+}
+
+// =============================================================================
+// P2 stale-aware query predicates (design doc: Decisions 4 + 7)
+// =============================================================================
+
+/**
+ * Provenance values that represent SCIP coverage **of a specific file**.
+ * Used by `markScipFileStale` / `bulkMarkScipFilesStale` to identify the
+ * rows whose staleness must flip when that file's SCIP data drifts.
+ *
+ * Two values qualify:
+ *  - `'scip'`                              — direct SCIP-emitted nodes/edges
+ *  - `'tree-sitter (scip-empty-fallback)'` — fallback rows created when a SCIP
+ *    doc has zero occurrences but the file is large enough that tree-sitter
+ *    fills in. These are semantically SCIP-coverage-with-empty-doc, so they
+ *    participate in the SCIP staleness lifecycle even though their provenance
+ *    string starts with `tree-sitter` (round 4 finding 2).
+ *
+ * Excluded: `'scip:external'` — external nodes have synthetic file paths
+ * (`<external:scheme/pkg>`); they are never marked stale per file.
+ */
+export const SCIP_FILE_PROVENANCES = [
+  'scip',
+  'tree-sitter (scip-empty-fallback)',
+] as const;
+
+const SCIP_FILE_PROVENANCES_SQL =
+  "('scip', 'tree-sitter (scip-empty-fallback)')";
+
+/**
+ * Default freshness filter — restricts a query to rows that are either fresh
+ * (`stale = 0`) or marked stale-but-visible (`staleness_visible = 1`). Hidden-
+ * stale rows (`stale = 1 AND staleness_visible = 0`) are excluded.
+ *
+ * Returns the predicate clause only; callers compose `WHERE` / `AND` explicitly.
+ * This is the predicate-only API form (design doc round 3 finding 2): the
+ * earlier `withFreshnessFilter(sql)` shape that appended `AND (...)` produced
+ * invalid SQL for clauseless statements like `SELECT * FROM nodes`.
+ *
+ * Pass `alias` for joined SELECTs that need to disambiguate the column source
+ * (e.g. `freshPredicate('n')` for `SELECT n.* FROM nodes n ...`). The bare
+ * call form produces unprefixed `stale` / `staleness_visible` references.
+ *
+ * Usage:
+ *   `SELECT * FROM nodes WHERE ${freshPredicate()}`                   // clauseless
+ *   `SELECT * FROM nodes WHERE name = ? AND ${freshPredicate()}`      // existing WHERE
+ *   `SELECT n.* FROM nodes n JOIN files f WHERE ${freshPredicate('n')}` // joined alias
+ */
+export function freshPredicate(alias: string = ''): string {
+  const prefix = alias ? (alias.endsWith('.') ? alias : `${alias}.`) : '';
+  return `(${prefix}stale = 0 OR ${prefix}staleness_visible = 1)`;
+}
+
+/**
+ * Edge endpoint visibility predicate (design doc Decision 7).
+ *
+ * Returns a subquery that excludes node ids currently marked hidden-stale.
+ * Callers compose against the relevant edge column (source or target):
+ *
+ *   `SELECT * FROM edges WHERE source = ?
+ *      AND ${freshPredicate()}
+ *      AND source ${visibleNodeIdPredicate()}
+ *      AND target ${visibleNodeIdPredicate()}`
+ *
+ * The hidden set is small in the common case (zero rows on a freshly-refreshed
+ * DB; tens to hundreds during normal editing). The partial index
+ * `idx_nodes_stale WHERE stale = 1` (schema v7) makes the subquery a near-
+ * empty index scan. `NOT IN` against an indexed subquery is well-optimized by
+ * SQLite's planner and avoids the row-multiplication risk of a LEFT JOIN.
+ */
+export function visibleNodeIdPredicate(): string {
+  return `NOT IN (SELECT id FROM nodes WHERE stale = 1 AND staleness_visible = 0)`;
 }
 
 /**
@@ -203,6 +292,14 @@ export class QueryBuilder {
     getUnresolvedBatch?: SqliteStatement;
     getAllFilePaths?: SqliteStatement;
     getAllNodeNames?: SqliteStatement;
+    // P2.2 stale-aware sync helpers
+    isFileScipCovered?: SqliteStatement;
+    markScipNodesStale?: SqliteStatement;
+    markScipEdgesStale?: SqliteStatement;
+    deleteShadowEdgesByFile?: SqliteStatement;
+    deleteShadowNodesByFile?: SqliteStatement;
+    // P2.3 scip-refresh post-ingest assertion
+    countShadowRowsForFile?: SqliteStatement;
   } = {};
 
   constructor(db: SqliteDatabase) {
@@ -218,6 +315,11 @@ export class QueryBuilder {
    */
   insertNode(node: Node): void {
     if (!this.stmts.insertNode) {
+      // Freshness invariant (P2.1.4): every fresh contribution writes
+      // stale=0, staleness_visible=0 explicitly. The columns have DEFAULT 0
+      // from schema v5, but relying on the default would make freshness
+      // clearing accidental rather than designed. Mirrors the same
+      // invariant in upsertGraphEdge.
       this.stmts.insertNode = this.db.prepare(`
         INSERT OR REPLACE INTO nodes (
           id, kind, name, qualified_name, file_path, language,
@@ -225,14 +327,16 @@ export class QueryBuilder {
           docstring, signature, visibility,
           is_exported, is_async, is_static, is_abstract,
           decorators, type_parameters,
-          provenance, scip_symbol, scip_index_path, updated_at
+          provenance, scip_symbol, scip_index_path, updated_at,
+          stale, staleness_visible
         ) VALUES (
           @id, @kind, @name, @qualifiedName, @filePath, @language,
           @startLine, @endLine, @startColumn, @endColumn,
           @docstring, @signature, @visibility,
           @isExported, @isAsync, @isStatic, @isAbstract,
           @decorators, @typeParameters,
-          @provenance, @scipSymbol, @scipIndexPath, @updatedAt
+          @provenance, @scipSymbol, @scipIndexPath, @updatedAt,
+          0, 0
         )
       `);
     }
@@ -248,6 +352,13 @@ export class QueryBuilder {
       });
       return;
     }
+
+    // Invalidate any cached entry for this id. INSERT OR REPLACE can overwrite
+    // an existing row whose previous version was warmed into the cache via
+    // getNodeById; without this, the cache would serve the pre-replace state.
+    // Mirrors updateNode's pre-write invalidation (queries.ts ~L437) so the
+    // freshness/identity invariants are uniform across all node writes.
+    this.nodeCache.delete(node.id);
 
     try {
       this.stmts.insertNode.run({
@@ -300,6 +411,8 @@ export class QueryBuilder {
    */
   updateNode(node: Node): void {
     if (!this.stmts.updateNode) {
+      // Freshness invariant (P2.1.4): UPDATE is a fresh contribution to
+      // this row, so clear stale flags. Same logic as insertNode.
       this.stmts.updateNode = this.db.prepare(`
         UPDATE nodes SET
           kind = @kind,
@@ -320,7 +433,9 @@ export class QueryBuilder {
           is_abstract = @isAbstract,
           decorators = @decorators,
           type_parameters = @typeParameters,
-          updated_at = @updatedAt
+          updated_at = @updatedAt,
+          stale = 0,
+          staleness_visible = 0
         WHERE id = @id
       `);
     }
@@ -390,7 +505,10 @@ export class QueryBuilder {
    * Get a node by ID
    */
   getNodeById(id: string): Node | null {
-    // Check cache first
+    // Check cache first. Cached rows have already passed the freshness
+    // filter at the time of their original lookup, AND P2.2's write helpers
+    // (markScipFileStale / deleteFileTreeSitterRows) invalidate the cache
+    // before marking rows stale — so cache hits are guaranteed visible.
     if (this.nodeCache.has(id)) {
       const cached = this.nodeCache.get(id)!;
       // Move to end to implement LRU (delete and re-add)
@@ -400,7 +518,9 @@ export class QueryBuilder {
     }
 
     if (!this.stmts.getNodeById) {
-      this.stmts.getNodeById = this.db.prepare('SELECT * FROM nodes WHERE id = ?');
+      this.stmts.getNodeById = this.db.prepare(
+        `SELECT * FROM nodes WHERE id = ? AND ${freshPredicate()}`,
+      );
     }
     const row = this.stmts.getNodeById.get(id) as NodeRow | undefined;
     if (!row) {
@@ -439,7 +559,7 @@ export class QueryBuilder {
   getNodesByFile(filePath: string): Node[] {
     if (!this.stmts.getNodesByFile) {
       this.stmts.getNodesByFile = this.db.prepare(
-        'SELECT * FROM nodes WHERE file_path = ? ORDER BY start_line'
+        `SELECT * FROM nodes WHERE file_path = ? AND ${freshPredicate()} ORDER BY start_line`,
       );
     }
     const rows = this.stmts.getNodesByFile.all(filePath) as NodeRow[];
@@ -451,7 +571,9 @@ export class QueryBuilder {
    */
   getNodesByKind(kind: NodeKind): Node[] {
     if (!this.stmts.getNodesByKind) {
-      this.stmts.getNodesByKind = this.db.prepare('SELECT * FROM nodes WHERE kind = ?');
+      this.stmts.getNodesByKind = this.db.prepare(
+        `SELECT * FROM nodes WHERE kind = ? AND ${freshPredicate()}`,
+      );
     }
     const rows = this.stmts.getNodesByKind.all(kind) as NodeRow[];
     return rows.map(rowToNode);
@@ -461,7 +583,9 @@ export class QueryBuilder {
    * Get all nodes in the database
    */
   getAllNodes(): Node[] {
-    const rows = this.db.prepare('SELECT * FROM nodes').all() as NodeRow[];
+    const rows = this.db
+      .prepare(`SELECT * FROM nodes WHERE ${freshPredicate()}`)
+      .all() as NodeRow[];
     return rows.map(rowToNode);
   }
 
@@ -470,7 +594,9 @@ export class QueryBuilder {
    */
   getNodesByName(name: string): Node[] {
     if (!this.stmts.getNodesByName) {
-      this.stmts.getNodesByName = this.db.prepare('SELECT * FROM nodes WHERE name = ?');
+      this.stmts.getNodesByName = this.db.prepare(
+        `SELECT * FROM nodes WHERE name = ? AND ${freshPredicate()}`,
+      );
     }
     const rows = this.stmts.getNodesByName.all(name) as NodeRow[];
     return rows.map(rowToNode);
@@ -482,7 +608,7 @@ export class QueryBuilder {
   getNodesByQualifiedNameExact(qualifiedName: string): Node[] {
     if (!this.stmts.getNodesByQualifiedNameExact) {
       this.stmts.getNodesByQualifiedNameExact = this.db.prepare(
-        'SELECT * FROM nodes WHERE qualified_name = ?'
+        `SELECT * FROM nodes WHERE qualified_name = ? AND ${freshPredicate()}`,
       );
     }
     const rows = this.stmts.getNodesByQualifiedNameExact.all(qualifiedName) as NodeRow[];
@@ -495,7 +621,7 @@ export class QueryBuilder {
   getNodesByLowerName(lowerName: string): Node[] {
     if (!this.stmts.getNodesByLowerName) {
       this.stmts.getNodesByLowerName = this.db.prepare(
-        'SELECT * FROM nodes WHERE lower(name) = ?'
+        `SELECT * FROM nodes WHERE lower(name) = ? AND ${freshPredicate()}`,
       );
     }
     const rows = this.stmts.getNodesByLowerName.all(lowerName) as NodeRow[];
@@ -575,7 +701,7 @@ export class QueryBuilder {
           sql += ' INNER JOIN node_tags ON node_tags.node_id = nodes.id AND node_tags.tag = ?';
           params.push(tag);
         }
-        sql += ' WHERE nodes.name = ? COLLATE NOCASE';
+        sql += ` WHERE nodes.name = ? COLLATE NOCASE AND ${freshPredicate('nodes')}`;
         params.push(term);
         if (kinds && kinds.length > 0) {
           sql += ` AND nodes.kind IN (${kinds.map(() => '?').join(',')})`;
@@ -654,7 +780,7 @@ export class QueryBuilder {
       sql += ' INNER JOIN node_tags ON node_tags.node_id = nodes.id AND node_tags.tag = ?';
       params.push(tag);
     }
-    sql += ' WHERE 1=1';
+    sql += ` WHERE ${freshPredicate('nodes')}`;
     if (kinds && kinds.length > 0) {
       sql += ` AND nodes.kind IN (${kinds.map(() => '?').join(',')})`;
       params.push(...kinds);
@@ -715,7 +841,7 @@ export class QueryBuilder {
         sql += ' INNER JOIN node_tags ON node_tags.node_id = nodes.id AND node_tags.tag = ?';
         params.push(tag);
       }
-      sql += ' WHERE nodes.name = ?';
+      sql += ` WHERE nodes.name = ? AND ${freshPredicate('nodes')}`;
       params.push(c.name);
       if (kinds && kinds.length > 0) {
         sql += ` AND nodes.kind IN (${kinds.map(() => '?').join(',')})`;
@@ -791,7 +917,7 @@ export class QueryBuilder {
       params.push(tag);
     }
 
-    sql += ' WHERE nodes_fts MATCH ?';
+    sql += ` WHERE nodes_fts MATCH ? AND ${freshPredicate('nodes')}`;
     params.push(ftsQuery);
 
     if (kinds && kinds.length > 0) {
@@ -856,7 +982,7 @@ export class QueryBuilder {
     }
 
     sql += `
-      WHERE (
+      WHERE ${freshPredicate('nodes')} AND (
         nodes.name LIKE ? OR
         nodes.qualified_name LIKE ? OR
         nodes.name LIKE ?
@@ -911,7 +1037,7 @@ export class QueryBuilder {
     // Pass 1: Find files containing each queried name, identify distinctive names
     const nameToFiles = new Map<string, Set<string>>();
     for (const name of names) {
-      let sql = 'SELECT DISTINCT file_path FROM nodes WHERE name COLLATE NOCASE = ?';
+      let sql = `SELECT DISTINCT file_path FROM nodes WHERE name COLLATE NOCASE = ? AND ${freshPredicate()}`;
       const params: (string | number)[] = [name];
       if (kinds && kinds.length > 0) {
         sql += ` AND kind IN (${kinds.map(() => '?').join(',')})`;
@@ -939,7 +1065,7 @@ export class QueryBuilder {
       let sql = `
         SELECT nodes.*, 1.0 as score
         FROM nodes
-        WHERE name COLLATE NOCASE = ?
+        WHERE name COLLATE NOCASE = ? AND ${freshPredicate('nodes')}
       `;
       const params: (string | number)[] = [name];
 
@@ -996,7 +1122,7 @@ export class QueryBuilder {
     let sql = `
       SELECT nodes.*, 1.0 as score
       FROM nodes
-      WHERE name LIKE ?
+      WHERE name LIKE ? AND ${freshPredicate('nodes')}
     `;
     const params: (string | number)[] = [`%${substring}%`];
 
@@ -1150,8 +1276,15 @@ export class QueryBuilder {
    * Get outgoing edges from a node
    */
   getOutgoingEdges(sourceId: string, kinds?: EdgeKind[], provenance?: string): Edge[] {
+    // P2.1.6: every public edge query applies BOTH
+    //   (a) freshPredicate — the edge's own staleness
+    //   (b) visibleNodeIdPredicate on source AND target — endpoint visibility
+    // (Design doc Decision 7: edges to hidden-stale endpoints would otherwise
+    //  leak as dangling references.)
     if ((kinds && kinds.length > 0) || provenance) {
-      let sql = 'SELECT * FROM edges WHERE source = ?';
+      let sql = `SELECT * FROM edges WHERE source = ? AND ${freshPredicate()}`
+        + ` AND source ${visibleNodeIdPredicate()}`
+        + ` AND target ${visibleNodeIdPredicate()}`;
       const params: (string | number)[] = [sourceId];
 
       if (kinds && kinds.length > 0) {
@@ -1169,7 +1302,11 @@ export class QueryBuilder {
     }
 
     if (!this.stmts.getEdgesBySource) {
-      this.stmts.getEdgesBySource = this.db.prepare('SELECT * FROM edges WHERE source = ?');
+      this.stmts.getEdgesBySource = this.db.prepare(
+        `SELECT * FROM edges WHERE source = ? AND ${freshPredicate()}`
+          + ` AND source ${visibleNodeIdPredicate()}`
+          + ` AND target ${visibleNodeIdPredicate()}`,
+      );
     }
     const rows = this.stmts.getEdgesBySource.all(sourceId) as EdgeRow[];
     return rows.map(rowToEdge);
@@ -1180,13 +1317,20 @@ export class QueryBuilder {
    */
   getIncomingEdges(targetId: string, kinds?: EdgeKind[]): Edge[] {
     if (kinds && kinds.length > 0) {
-      const sql = `SELECT * FROM edges WHERE target = ? AND kind IN (${kinds.map(() => '?').join(',')})`;
+      const sql = `SELECT * FROM edges WHERE target = ? AND ${freshPredicate()}`
+        + ` AND source ${visibleNodeIdPredicate()}`
+        + ` AND target ${visibleNodeIdPredicate()}`
+        + ` AND kind IN (${kinds.map(() => '?').join(',')})`;
       const rows = this.db.prepare(sql).all(targetId, ...kinds) as EdgeRow[];
       return rows.map(rowToEdge);
     }
 
     if (!this.stmts.getEdgesByTarget) {
-      this.stmts.getEdgesByTarget = this.db.prepare('SELECT * FROM edges WHERE target = ?');
+      this.stmts.getEdgesByTarget = this.db.prepare(
+        `SELECT * FROM edges WHERE target = ? AND ${freshPredicate()}`
+          + ` AND source ${visibleNodeIdPredicate()}`
+          + ` AND target ${visibleNodeIdPredicate()}`,
+      );
     }
     const rows = this.stmts.getEdgesByTarget.all(targetId) as EdgeRow[];
     return rows.map(rowToEdge);
@@ -1200,7 +1344,11 @@ export class QueryBuilder {
     if (nodeIds.length === 0) return [];
 
     const idsJson = JSON.stringify(nodeIds);
-    let sql = `SELECT * FROM edges WHERE source IN (SELECT value FROM json_each(?)) AND target IN (SELECT value FROM json_each(?))`;
+    let sql = `SELECT * FROM edges WHERE source IN (SELECT value FROM json_each(?))`
+      + ` AND target IN (SELECT value FROM json_each(?))`
+      + ` AND ${freshPredicate()}`
+      + ` AND source ${visibleNodeIdPredicate()}`
+      + ` AND target ${visibleNodeIdPredicate()}`;
     const params: string[] = [idsJson, idsJson];
 
     if (kinds && kinds.length > 0) {
@@ -1220,9 +1368,89 @@ export class QueryBuilder {
    */
   getEdgesByContributingProvenance(p: GraphProvenance): Edge[] {
     const rows = this.db
-      .prepare(`SELECT * FROM edges WHERE provenances LIKE '%"' || ? || '"%'`)
+      .prepare(
+        `SELECT * FROM edges WHERE provenances LIKE '%"' || ? || '"%'`
+          + ` AND ${freshPredicate()}`
+          + ` AND source ${visibleNodeIdPredicate()}`
+          + ` AND target ${visibleNodeIdPredicate()}`,
+      )
       .all(p) as EdgeRow[];
     return rows.map(rowToEdge);
+  }
+
+  // ===========================================================================
+  // P2.4 — *IncludingDanglingEndpoints sibling queries (Decision 7)
+  // ===========================================================================
+  //
+  // These bypass `visibleNodeIdPredicate` (the endpoint-visibility filter)
+  // while STILL applying `freshPredicate` to the edge row itself. They
+  // exist for diagnostics — status command, parity harness — that need
+  // to see edges whose endpoint nodes have been hidden by the sync's
+  // shadow path. Per Decision 7, the default APIs MUST NOT return such
+  // edges (they'd be dangling references from a consumer's perspective),
+  // but the underlying data must remain reachable.
+
+  /**
+   * Same as {@link getOutgoingEdges} but does NOT filter edges whose
+   * endpoint nodes are hidden-stale. Edge-row freshness still applies.
+   *
+   * Use only for diagnostics — production paths should use
+   * {@link getOutgoingEdges} so dangling references don't leak.
+   */
+  getOutgoingEdgesIncludingDanglingEndpoints(sourceId: string): Edge[] {
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM edges WHERE source = ? AND ${freshPredicate()}`,
+      )
+      .all(sourceId) as EdgeRow[];
+    return rows.map(rowToEdge);
+  }
+
+  /** See {@link getOutgoingEdgesIncludingDanglingEndpoints}. */
+  getIncomingEdgesIncludingDanglingEndpoints(targetId: string): Edge[] {
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM edges WHERE target = ? AND ${freshPredicate()}`,
+      )
+      .all(targetId) as EdgeRow[];
+    return rows.map(rowToEdge);
+  }
+
+  /** See {@link getOutgoingEdgesIncludingDanglingEndpoints}. */
+  findEdgesBetweenNodesIncludingDanglingEndpoints(nodeIds: string[]): Edge[] {
+    if (nodeIds.length === 0) return [];
+    const idsJson = JSON.stringify(nodeIds);
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM edges WHERE source IN (SELECT value FROM json_each(?))`
+          + ` AND target IN (SELECT value FROM json_each(?))`
+          + ` AND ${freshPredicate()}`,
+      )
+      .all(idsJson, idsJson) as EdgeRow[];
+    return rows.map(rowToEdge);
+  }
+
+  /**
+   * Count of edges hidden ONLY because at least one endpoint is hidden-stale —
+   * i.e. edges that pass `freshPredicate` on their own row but fail
+   * `visibleNodeIdPredicate` on source OR target. Surfaced by
+   * `codegraph status` as the "Dangling against stale" diagnostic.
+   *
+   * Raw read by design — counts edges the public API hides; whitelisted
+   * in the CI bypass guard.
+   */
+  countDanglingEdgesAgainstHiddenStale(): number {
+    const row = this.db
+      .prepare(
+        `SELECT COUNT(*) AS n FROM edges
+          WHERE ${freshPredicate()}
+            AND (
+                  source IN (SELECT id FROM nodes WHERE stale = 1 AND staleness_visible = 0)
+               OR target IN (SELECT id FROM nodes WHERE stale = 1 AND staleness_visible = 0)
+            )`,
+      )
+      .get() as { n: number };
+    return row.n;
   }
 
   // ===========================================================================
@@ -1249,7 +1477,7 @@ export class QueryBuilder {
     const rows = this.db.prepare(
       `SELECT n.* FROM nodes n
        INNER JOIN node_tags t ON t.node_id = n.id
-       WHERE t.tag = ?`,
+       WHERE t.tag = ? AND ${freshPredicate('n')}`,
     ).all(tag) as NodeRow[];
     return rows.map(rowToNode);
   }
@@ -1368,11 +1596,19 @@ export class QueryBuilder {
     // `json_each` exposes its own `id` column, so the unqualified `id` in
     // `COUNT(DISTINCT id)` is ambiguous and errors at runtime. Qualify
     // with `edges.id`.
+    //
+    // P2.1.8: applies the default freshness + endpoint-visibility filter so
+    // the per-framework count matches what `getStats` reports. Status callers
+    // wanting the raw total should use a future `*IncludingStale` sibling
+    // (none added yet — no caller needs it).
     const rows = this.db
       .prepare(
         `SELECT value AS provenance, COUNT(DISTINCT edges.id) AS edge_count
          FROM edges, json_each(edges.provenances)
          WHERE value LIKE 'framework:%'
+           AND ${freshPredicate('edges')}
+           AND edges.source ${visibleNodeIdPredicate()}
+           AND edges.target ${visibleNodeIdPredicate()}
          GROUP BY value
          ORDER BY value`,
       )
@@ -1430,6 +1666,12 @@ export class QueryBuilder {
   /** `INSERT OR IGNORE` a node row. Shared by internal + external SCIP inserts. */
   private insertNodeOrIgnore(node: Node): void {
     if (!this.stmts.insertNodeOrIgnore) {
+      // Freshness invariant (P2.1.4): fresh SCIP/external inserts write
+      // stale=0, staleness_visible=0 explicitly. `OR IGNORE` semantics:
+      // if the row already exists, the insert is a no-op — the prior
+      // row's stale flag is NOT touched. That's correct for SCIP
+      // re-ingest, where STAGE B has already scope-deleted the prior
+      // SCIP rows before this insert reaches them.
       this.stmts.insertNodeOrIgnore = this.db.prepare(`
         INSERT OR IGNORE INTO nodes (
           id, kind, name, qualified_name, file_path, language,
@@ -1437,14 +1679,16 @@ export class QueryBuilder {
           docstring, signature, visibility,
           is_exported, is_async, is_static, is_abstract,
           decorators, type_parameters,
-          provenance, scip_symbol, scip_index_path, updated_at
+          provenance, scip_symbol, scip_index_path, updated_at,
+          stale, staleness_visible
         ) VALUES (
           @id, @kind, @name, @qualifiedName, @filePath, @language,
           @startLine, @endLine, @startColumn, @endColumn,
           @docstring, @signature, @visibility,
           @isExported, @isAsync, @isStatic, @isAbstract,
           @decorators, @typeParameters,
-          @provenance, @scipSymbol, @scipIndexPath, @updatedAt
+          @provenance, @scipSymbol, @scipIndexPath, @updatedAt,
+          0, 0
         )
       `);
     }
@@ -1558,6 +1802,290 @@ export class QueryBuilder {
       .prepare(`SELECT scip_index_path FROM scip_ingestions WHERE completed_at IS NULL`)
       .all() as Array<{ scip_index_path: string }>;
     return rows.map((r) => r.scip_index_path);
+  }
+
+  // ===========================================================================
+  // P2.2 — Stale-aware sync write helpers
+  // ===========================================================================
+
+  /**
+   * True if `filePath` is covered by any ingested `.scip` index — i.e. has at
+   * least one `scip_documents` row. Used by `sync()` to branch between
+   * shadow-extraction and the default replace-extraction path.
+   */
+  isFileScipCovered(filePath: string): boolean {
+    if (!this.stmts.isFileScipCovered) {
+      this.stmts.isFileScipCovered = this.db.prepare(
+        `SELECT 1 AS hit FROM scip_documents WHERE source_file_path = ? LIMIT 1`,
+      );
+    }
+    const row = this.stmts.isFileScipCovered.get(filePath) as { hit: number } | undefined;
+    return row !== undefined && row !== null;
+  }
+
+  /**
+   * Mark the SCIP-owned nodes and source-side SCIP edges for `filePath` stale.
+   *
+   * Used by the sync path when a SCIP-covered file changes:
+   *  - `visible = 0` (hidden-stale): shadow-capable language; tree-sitter
+   *    will fill in. Hidden-stale rows are excluded by `freshPredicate`.
+   *  - `visible = 1` (visible-stale): no shadow grammar; SCIP data remains
+   *    visible with `Node.stale = true` so callers can downweight.
+   *
+   * The predicate is `SCIP_FILE_PROVENANCES` — covers both `'scip'` and
+   * `'tree-sitter (scip-empty-fallback)'` (round 4 finding 2). Edge marking
+   * is **source-only** per design doc Decision 2: an edge becomes stale
+   * when its source file drifts, not its target. Target-side visibility
+   * coherence is handled at query time by `visibleNodeIdPredicate` (P2.1.6).
+   *
+   * **Cache invalidation runs BEFORE the SQL writes** (round 4 finding 1):
+   * `getNodeById`'s cache lookup precedes the predicate-filtered SQL, so
+   * cached entries for `filePath` must be evicted before their stale flag
+   * flips or queries will return the pre-stale cached value.
+   */
+  markScipFileStale(filePath: string, visible: 0 | 1): { nodesMarked: number; edgesMarked: number } {
+    // 1. Invalidate cache for nodes in this file (file-scoped loop — same
+    //    pattern as deleteNodesByFile at queries.ts:381).
+    for (const [id, node] of this.nodeCache) {
+      if (node.filePath === filePath) {
+        this.nodeCache.delete(id);
+      }
+    }
+
+    // 2. Mark SCIP-owned nodes stale.
+    if (!this.stmts.markScipNodesStale) {
+      this.stmts.markScipNodesStale = this.db.prepare(
+        `UPDATE nodes
+            SET stale = 1, staleness_visible = ?
+          WHERE file_path = ?
+            AND provenance IN ${SCIP_FILE_PROVENANCES_SQL}`,
+      );
+    }
+    const nodeResult = this.stmts.markScipNodesStale.run(visible, filePath);
+
+    // 3. Mark source-side SCIP edges stale (Decision 2 — source-only).
+    //    Inner SELECT also uses SCIP_FILE_PROVENANCES so fallback-rooted edges
+    //    are caught alongside `'scip'` ones.
+    if (!this.stmts.markScipEdgesStale) {
+      this.stmts.markScipEdgesStale = this.db.prepare(
+        `UPDATE edges
+            SET stale = 1, staleness_visible = ?
+          WHERE source IN (
+                  SELECT id FROM nodes
+                   WHERE file_path = ?
+                     AND provenance IN ${SCIP_FILE_PROVENANCES_SQL}
+                )`,
+      );
+    }
+    const edgeResult = this.stmts.markScipEdgesStale.run(visible, filePath);
+
+    return {
+      nodesMarked: Number(nodeResult.changes ?? 0),
+      edgesMarked: Number(edgeResult.changes ?? 0),
+    };
+  }
+
+  /**
+   * Delete all tree-sitter shadow rows for `filePath` — both the regular
+   * `'tree-sitter'` provenance and the `'tree-sitter (scip-empty-fallback)'`
+   * variant (predicate `provenance LIKE 'tree-sitter%'`).
+   *
+   * Used by the sync shadow path: after `markScipFileStale` has flipped the
+   * SCIP rows to hidden-stale, this clears any prior shadow output for the
+   * file so the upcoming `treesitter_extract` can emit fresh nodes/edges
+   * without `INSERT OR REPLACE` collisions on stale shadow ids.
+   *
+   * Edges deleted source-OR-target via the node id set — symmetric here
+   * because shadow extraction owns the rows it deletes (no cross-file
+   * coordination concern). Different from `markScipFileStale`'s source-only
+   * edge marking, which serves a different lifecycle.
+   *
+   * Cache invalidation runs BEFORE the SQL writes.
+   */
+  /**
+   * Bulk variant of `markScipFileStale` for the branch-switch path
+   * (design doc Decision 6). Called when sync sees more SCIP-covered files
+   * changed than `maxStaleFilesPerSync`; marks the whole batch
+   * `staleness_visible = 1` and skips per-file shadow extraction.
+   *
+   * Cache invalidation strategy:
+   *  - If `filePaths.length` is small relative to the cache (< maxCacheSize),
+   *    use file-scoped invalidation (loop once over the cache, drop any entry
+   *    whose `filePath` is in the set).
+   *  - Otherwise wholesale `clearCache()` — cheaper than `O(cacheSize × filePaths)`
+   *    membership checks.
+   *
+   * SQL uses JSON-each over a JSON array parameter to avoid building a
+   * variable-length IN clause (which would defeat prepared-statement caching).
+   */
+  bulkMarkScipFilesStale(
+    filePaths: readonly string[],
+    visible: 0 | 1,
+  ): { nodesMarked: number; edgesMarked: number; filesAffected: number } {
+    if (filePaths.length === 0) {
+      return { nodesMarked: 0, edgesMarked: 0, filesAffected: 0 };
+    }
+
+    // 1. Cache invalidation — file-scoped for small batches, wholesale for big
+    //    ones. Threshold: when the batch is larger than the cache, the
+    //    file-scoped loop's O(cacheSize × filePaths) membership check costs
+    //    more than just wiping the cache. With the default
+    //    `maxStaleFilesPerSync = 50` the wholesale branch never triggers via
+    //    sync — but external callers (parity harness, future CLI subcommands)
+    //    may pass thousands of files at once, and the bookkeeping must be
+    //    correct there too.
+    if (filePaths.length >= this.maxCacheSize) {
+      this.nodeCache.clear();
+    } else {
+      const filePathSet = new Set(filePaths);
+      for (const [id, node] of this.nodeCache) {
+        if (filePathSet.has(node.filePath)) {
+          this.nodeCache.delete(id);
+        }
+      }
+    }
+
+    // 2. Mark nodes stale via JSON-each. Single prepared statement regardless
+    //    of batch size.
+    const filePathsJson = JSON.stringify(filePaths);
+    const nodeResult = this.db
+      .prepare(
+        `UPDATE nodes
+            SET stale = 1, staleness_visible = ?
+          WHERE file_path IN (SELECT value FROM json_each(?))
+            AND provenance IN ${SCIP_FILE_PROVENANCES_SQL}`,
+      )
+      .run(visible, filePathsJson);
+
+    // 3. Mark source-side edges stale.
+    const edgeResult = this.db
+      .prepare(
+        `UPDATE edges
+            SET stale = 1, staleness_visible = ?
+          WHERE source IN (
+                  SELECT id FROM nodes
+                   WHERE file_path IN (SELECT value FROM json_each(?))
+                     AND provenance IN ${SCIP_FILE_PROVENANCES_SQL}
+                )`,
+      )
+      .run(visible, filePathsJson);
+
+    return {
+      nodesMarked: Number(nodeResult.changes ?? 0),
+      edgesMarked: Number(edgeResult.changes ?? 0),
+      filesAffected: filePaths.length,
+    };
+  }
+
+  /**
+   * Count `provenance = 'tree-sitter'` rows for a file — narrow (exact match,
+   * NOT `LIKE 'tree-sitter%'`). Used by `scip-refresh`'s post-ingest assertion
+   * (P2.3.3) to verify the refresh purged sync's shadow output.
+   *
+   * **Excludes** `'tree-sitter (scip-empty-fallback)'` rows by design (round 3
+   * finding 1): those are legitimately created by STAGE E's `maybeEmptyFallback`
+   * for SCIP documents with zero occurrences. The assertion targets sync's
+   * shadow rows specifically — leaked shadow indicates the broader
+   * `supersedeTreeSitter` predicate failed or sync re-wrote between
+   * ingest commit and assertion.
+   */
+  countShadowRowsForFile(filePath: string): number {
+    if (!this.stmts.countShadowRowsForFile) {
+      this.stmts.countShadowRowsForFile = this.db.prepare(
+        `SELECT COUNT(*) AS n FROM nodes WHERE file_path = ? AND provenance = 'tree-sitter'`,
+      );
+    }
+    const row = this.stmts.countShadowRowsForFile.get(filePath) as { n: number };
+    return row.n;
+  }
+
+  /**
+   * Aggregate node counts grouped by `(language, provenance)`. Used by
+   * `CodeGraph.getLanguageTiers` (P2.4.3) to derive the per-language tier
+   * display in `codegraph status` — one query instead of `N × 2` per-language
+   * COUNT calls.
+   *
+   * Reads RAW row state — does NOT apply `freshPredicate`. The status command
+   * wants to know "which languages have SCIP nodes regardless of stale state"
+   * — hidden-stale SCIP rows still count as "Tier 1 coverage exists in DB."
+   * Whitelisted in the CI bypass guard.
+   */
+  getNodeCountsByLanguageAndProvenance(): Array<{
+    language: Language;
+    provenance: string;
+    count: number;
+  }> {
+    const rows = this.db
+      .prepare(
+        `SELECT language, provenance, COUNT(*) AS count
+           FROM nodes
+          GROUP BY language, provenance`,
+      )
+      .all() as Array<{ language: string; provenance: string; count: number }>;
+    return rows.map((r) => ({
+      language: r.language as Language,
+      provenance: r.provenance,
+      count: r.count,
+    }));
+  }
+
+  /**
+   * Return repo-relative `source_file_path`s covered by the given
+   * `scip_index_path`. Used by `scip-refresh` to drive the post-ingest
+   * shadow-leak assertion across exactly the files this refresh touched.
+   */
+  getScipDocumentsForIndex(scipIndexPath: string): string[] {
+    const rows = this.db
+      .prepare(
+        `SELECT source_file_path FROM scip_documents WHERE scip_index_path = ?`,
+      )
+      .all(scipIndexPath) as Array<{ source_file_path: string }>;
+    return rows.map((r) => r.source_file_path);
+  }
+
+  deleteFileTreeSitterRows(filePath: string): { nodesDeleted: number; edgesDeleted: number } {
+    // 1. Cache invalidation, file-scoped.
+    for (const [id, node] of this.nodeCache) {
+      if (node.filePath === filePath) {
+        this.nodeCache.delete(id);
+      }
+    }
+
+    // 2. Delete edges first (FK-ish ordering — edges reference nodes by id;
+    //    deleting nodes before edges leaves dangling edges if anything else
+    //    references them). The predicate uses LIKE 'tree-sitter%' to cover
+    //    both shadow variants.
+    if (!this.stmts.deleteShadowEdgesByFile) {
+      this.stmts.deleteShadowEdgesByFile = this.db.prepare(
+        `DELETE FROM edges
+          WHERE source IN (
+                  SELECT id FROM nodes
+                   WHERE file_path = ?
+                     AND provenance LIKE 'tree-sitter%'
+                )
+             OR target IN (
+                  SELECT id FROM nodes
+                   WHERE file_path = ?
+                     AND provenance LIKE 'tree-sitter%'
+                )`,
+      );
+    }
+    const edgeResult = this.stmts.deleteShadowEdgesByFile.run(filePath, filePath);
+
+    // 3. Delete the nodes themselves.
+    if (!this.stmts.deleteShadowNodesByFile) {
+      this.stmts.deleteShadowNodesByFile = this.db.prepare(
+        `DELETE FROM nodes
+          WHERE file_path = ?
+            AND provenance LIKE 'tree-sitter%'`,
+      );
+    }
+    const nodeResult = this.stmts.deleteShadowNodesByFile.run(filePath);
+
+    return {
+      nodesDeleted: Number(nodeResult.changes ?? 0),
+      edgesDeleted: Number(edgeResult.changes ?? 0),
+    };
   }
 
   // ===========================================================================
@@ -1780,11 +2308,18 @@ export class QueryBuilder {
   }
 
   /**
-   * Get all distinct node names (lightweight — just name strings for pre-filtering)
+   * Get all distinct node names (lightweight — just name strings for pre-filtering).
+   *
+   * Feeds `searchNodesFuzzy`'s capped candidate set; round-5 review flagged
+   * that without filtering, hidden-stale names would crowd the cap and cause
+   * false negatives. The freshness predicate excludes hidden-stale names;
+   * visible-stale names remain searchable (matches the default contract).
    */
   getAllNodeNames(): string[] {
     if (!this.stmts.getAllNodeNames) {
-      this.stmts.getAllNodeNames = this.db.prepare('SELECT DISTINCT name FROM nodes');
+      this.stmts.getAllNodeNames = this.db.prepare(
+        `SELECT DISTINCT name FROM nodes WHERE ${freshPredicate()}`,
+      );
     }
     const rows = this.stmts.getAllNodeNames.all() as Array<{ name: string }>;
     return rows.map((r) => r.name);
@@ -1852,20 +2387,58 @@ export class QueryBuilder {
   // ===========================================================================
 
   /**
-   * Get graph statistics
+   * Get graph statistics — fresh+visible-stale only.
+   *
+   * **Behavior change (P2.1.7 / design Decision 5)**: this now applies the
+   * default freshness filter for nodes AND the visibility-coherent filter for
+   * edges (Decision 7) — matching the contract of every other public read.
+   * Hidden-stale rows and edges with hidden-stale endpoints are excluded.
+   *
+   * Use {@link getStatsIncludingStale} for raw totals including hidden rows.
+   * Use {@link getStaleSummary} for a hidden/visible/fresh breakdown.
+   *
+   * `fileCount` and `filesByLanguage` come from the `files` table, which has
+   * no stale columns — unchanged from prior behavior.
    */
   getStats(): GraphStats {
-    // Single query for all three aggregate counts
-    const counts = this.db.prepare(`
-      SELECT
-        (SELECT COUNT(*) FROM nodes) AS node_count,
-        (SELECT COUNT(*) FROM edges) AS edge_count,
-        (SELECT COUNT(*) FROM files) AS file_count
-    `).get() as { node_count: number; edge_count: number; file_count: number };
+    return this.computeStats({ applyFreshFilter: true });
+  }
+
+  /**
+   * Get graph statistics WITHOUT the freshness filter — raw totals including
+   * hidden-stale rows and dangling-endpoint edges. For status diagnostics
+   * and parity checking; do not use as a substitute for {@link getStats}
+   * unless you specifically need the raw count.
+   */
+  getStatsIncludingStale(): GraphStats {
+    return this.computeStats({ applyFreshFilter: false });
+  }
+
+  /**
+   * Shared stats computation. `applyFreshFilter=true` produces
+   * default-contract counts; `false` produces raw totals.
+   */
+  private computeStats(opts: { applyFreshFilter: boolean }): GraphStats {
+    // Node-side: filter clauses are AND'd into each subquery as needed.
+    const nodeWhere = opts.applyFreshFilter ? ` WHERE ${freshPredicate()}` : '';
+    // Edge-side: when filtering, apply both freshness AND endpoint visibility
+    // so the count matches what getOutgoingEdges/getIncomingEdges would return.
+    const edgeWhere = opts.applyFreshFilter
+      ? ` WHERE ${freshPredicate()}`
+        + ` AND source ${visibleNodeIdPredicate()}`
+        + ` AND target ${visibleNodeIdPredicate()}`
+      : '';
+
+    const counts = this.db.prepare(
+      `SELECT
+         (SELECT COUNT(*) FROM nodes${nodeWhere}) AS node_count,
+         (SELECT COUNT(*) FROM edges${edgeWhere}) AS edge_count,
+         (SELECT COUNT(*) FROM files)             AS file_count`,
+    ).get() as { node_count: number; edge_count: number; file_count: number };
 
     const nodesByKind = {} as Record<NodeKind, number>;
     const nodeKindRows = this.db
-      .prepare('SELECT kind, COUNT(*) as count FROM nodes GROUP BY kind')
+      .prepare(`SELECT kind, COUNT(*) as count FROM nodes${nodeWhere} GROUP BY kind`)
       .all() as Array<{ kind: string; count: number }>;
     for (const row of nodeKindRows) {
       nodesByKind[row.kind as NodeKind] = row.count;
@@ -1873,7 +2446,7 @@ export class QueryBuilder {
 
     const edgesByKind = {} as Record<EdgeKind, number>;
     const edgeKindRows = this.db
-      .prepare('SELECT kind, COUNT(*) as count FROM edges GROUP BY kind')
+      .prepare(`SELECT kind, COUNT(*) as count FROM edges${edgeWhere} GROUP BY kind`)
       .all() as Array<{ kind: string; count: number }>;
     for (const row of edgeKindRows) {
       edgesByKind[row.kind as EdgeKind] = row.count;
@@ -1896,6 +2469,78 @@ export class QueryBuilder {
       filesByLanguage,
       dbSizeBytes: 0, // Set by caller using DatabaseConnection.getSize()
       lastUpdated: Date.now(),
+    };
+  }
+
+  /**
+   * Decomposed staleness counts — hidden-stale vs visible-stale vs fresh.
+   * Reads raw `stale`/`staleness_visible` columns; does NOT apply the
+   * default freshness filter (it would defeat the purpose).
+   *
+   * Used by `codegraph status` (P2.4) to report SCIP drift transparently.
+   * The triple lets a status report distinguish "shadow active behind the
+   * scenes" (hidden-stale) from "needs refresh, no grammar" (visible-stale)
+   * — two semantically different categories that the public API conflates
+   * (hidden never reaches the API at all; visible reaches it with
+   * `stale: true`).
+   *
+   * `files` counts distinct `file_path` values among nodes in the category
+   * — useful for "N files awaiting refresh" headlines.
+   */
+  getStaleSummary(): StaleSummary {
+    // Single composite query for the three node categories.
+    const nodeRow = this.db
+      .prepare(
+        `SELECT
+           SUM(CASE WHEN stale=1 AND staleness_visible=0 THEN 1 ELSE 0 END) AS hidden_nodes,
+           SUM(CASE WHEN stale=1 AND staleness_visible=1 THEN 1 ELSE 0 END) AS visible_nodes,
+           SUM(CASE WHEN stale=0                         THEN 1 ELSE 0 END) AS fresh_nodes,
+           (SELECT COUNT(DISTINCT file_path) FROM nodes
+              WHERE stale=1 AND staleness_visible=0)                       AS hidden_files,
+           (SELECT COUNT(DISTINCT file_path) FROM nodes
+              WHERE stale=1 AND staleness_visible=1)                       AS visible_files
+         FROM nodes`,
+      )
+      .get() as {
+        hidden_nodes: number | null;
+        visible_nodes: number | null;
+        fresh_nodes: number | null;
+        hidden_files: number | null;
+        visible_files: number | null;
+      };
+
+    const edgeRow = this.db
+      .prepare(
+        `SELECT
+           SUM(CASE WHEN stale=1 AND staleness_visible=0 THEN 1 ELSE 0 END) AS hidden_edges,
+           SUM(CASE WHEN stale=1 AND staleness_visible=1 THEN 1 ELSE 0 END) AS visible_edges,
+           SUM(CASE WHEN stale=0                         THEN 1 ELSE 0 END) AS fresh_edges
+         FROM edges`,
+      )
+      .get() as {
+        hidden_edges: number | null;
+        visible_edges: number | null;
+        fresh_edges: number | null;
+      };
+
+    // SQLite returns NULL for SUM over zero rows; normalize to 0.
+    const nz = (v: number | null): number => v ?? 0;
+
+    return {
+      hiddenStale: {
+        nodes: nz(nodeRow.hidden_nodes),
+        edges: nz(edgeRow.hidden_edges),
+        files: nz(nodeRow.hidden_files),
+      },
+      visibleStale: {
+        nodes: nz(nodeRow.visible_nodes),
+        edges: nz(edgeRow.visible_edges),
+        files: nz(nodeRow.visible_files),
+      },
+      fresh: {
+        nodes: nz(nodeRow.fresh_nodes),
+        edges: nz(edgeRow.fresh_edges),
+      },
     };
   }
 

@@ -7,6 +7,116 @@ a [GitHub Release](https://github.com/colbymchenry/codegraph/releases) tagged
 This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0] - 2026-05-24
+
+Phase 2 ships: stale-aware sync that no longer wipes SCIP coverage when you
+edit a file, one-command SCIP refresh, and a status command that surfaces
+how each language is being indexed.
+
+### Added
+- **Stale-aware sync**: editing a SCIP-covered file no longer destroys its
+  SCIP-precision data. The SCIP rows are marked hidden-stale and tree-sitter
+  runs as a shadow alongside; queries keep working at syntactic precision
+  until the next refresh restores compiler-grade. For files in languages
+  with no tree-sitter grammar, SCIP data stays visible with a "stale"
+  annotation rather than disappearing. Configurable threshold
+  (`maxStaleFilesPerSync`, default 50) for branch-switch defense — large
+  change sets bulk-mark instead of running per-file shadow extraction,
+  with a CLI warning suggesting `codegraph scip-refresh`.
+- **`codegraph scip-refresh`**: spawns the configured SCIP indexer
+  (`config.scipRefreshCommand`, default `'scip-dotnet index ./'`),
+  re-ingests its output, recreates empty-document fallback rows for
+  SCIP documents with zero occurrences, then **reruns reference
+  resolution and Phase 3 framework synthesis** so derived data
+  (framework tags, resolved-reference edges) stays consistent with
+  the refreshed SCIP graph. Post-ingest assertion verifies no shadow
+  rows leaked through the refresh. Any recoverable Phase 3 errors
+  appear in `result.error` and the CLI prints a warning even on
+  successful refresh — silent drops of framework contributions under
+  scheduled `--quiet` operation are not possible. Exit codes: 0 = ok,
+  1 = indexer failed, 2 = ingest failed. Pairs with the cron / launchd
+  / systemd / Task Scheduler templates under `docs/scheduling/` for
+  nightly automation.
+- **`codegraph status` enhancements**: new "Staleness" section reports
+  hidden-stale (shadow active), visible-stale (needs refresh), and
+  **dangling-against-stale** file/edge counts. The dangling line surfaces
+  edges hidden ONLY because at least one endpoint is hidden-stale —
+  the visibility filter's contribution, distinct from edge-row staleness.
+  New "SCIP" section reports the last refresh time + per-language tier —
+  `Tier 1 SCIP (scip-dotnet)` when SCIP coverage is active, `Tier 0
+  tree-sitter` when not, with install hints when an indexer is available
+  but not installed. Manual-refresh hint surfaces automatically when
+  any file has drifted. JSON output adds 6 new fields: `stale`,
+  `danglingEdges`, `rawTotals`, `lastScipRefresh`, `languageTiers`,
+  `needsRefresh`.
+- **`Node.stale` / `Edge.stale` public boolean field**: AI-agent-facing
+  signal that this row is a visible-stale fallback. Hidden-stale never
+  surfaces (filtered by default queries).
+- **Public API**: `CodeGraph.refreshScip(options?)`,
+  `CodeGraph.getStaleSummary()`, `CodeGraph.getStatsIncludingStale()`,
+  `CodeGraph.getLastScipRefresh()`, `CodeGraph.getLanguageTiers()`,
+  `CodeGraph.countDanglingEdgesAgainstHiddenStale()`. The new dangling
+  counter quantifies edges suppressed by the endpoint-visibility filter
+  for status and diagnostics.
+- **Public diagnostic query siblings**: `QueryBuilder` exposes three
+  `*IncludingDanglingEndpoints` variants —
+  `getOutgoingEdgesIncludingDanglingEndpoints`,
+  `getIncomingEdgesIncludingDanglingEndpoints`,
+  `findEdgesBetweenNodesIncludingDanglingEndpoints`. They bypass the
+  endpoint-visibility filter while still respecting edge-row freshness
+  — for status, parity, and other diagnostic readers that need to see
+  edges the default API hides.
+- **Scheduler templates** at `docs/scheduling/` — launchd plist (macOS),
+  systemd service + timer (Linux), Task Scheduler XML (Windows), plus a
+  README with install / verify / customize instructions.
+
+### Changed
+- **`CodeGraph.getStats()` now excludes hidden-stale rows** and edges
+  whose source or target is hidden-stale. The new counts match what
+  every other public query returns. **For raw totals including
+  hidden-stale rows, use the new `CodeGraph.getStatsIncludingStale()`.**
+  Visible-stale rows still count in both surfaces.
+- **Public edge queries filter edges whose source OR target is hidden-stale**
+  (`getOutgoingEdges`, `getIncomingEdges`, `findEdgesBetweenNodes`,
+  `getEdgesByContributingProvenance`, `getFrameworkEdgeContributionCounts`).
+  Prevents dangling references reaching AI agents and graph consumers
+  when a target node has been hidden by sync's shadow path.
+- **`searchNodesFuzzy` candidate set excludes hidden-stale names** so
+  hidden symbols don't crowd the capped fuzzy candidate window.
+- **DB schema bumped 6 → 7**: adds two partial indexes
+  (`idx_nodes_stale`, `idx_edges_stale`) for fast hidden-set lookup.
+  Backward-compatible migration; no data changes, indexes only.
+
+### Performance
+- Hidden-stale-set scans against the new partial index measured at
+  **6.5ms per `getOutgoingEdges` call** with 5000 hidden nodes on WASM
+  SQLite (well below the 200ms native budget the design committed to).
+- Status command's per-language tier detection probes installed SCIP
+  indexers on PATH; results cached in-process so the per-status overhead
+  is paid once per CLI invocation (~250ms cold, ~0ms warm).
+
+### Notes
+- The stale-aware sync introduces a third data lifecycle category beyond
+  "fresh tree-sitter" and "fresh SCIP": "stale-but-still-here SCIP".
+  `codegraph status` surfaces all three transparently. Existing graphs
+  upgrade automatically on `codegraph index --scip-auto` or the first
+  `codegraph scip-refresh`.
+- `codegraph scip-refresh` now acquires the cross-process `FileLock` in
+  addition to the in-process `indexMutex`. Two concurrent
+  `codegraph scip-refresh` invocations from separate processes no longer
+  race STAGE B deletes; the late arrival exits with the new
+  `'lock-failed'` phase (exit code 1) and a clear error message.
+- **Shell-scripter contract**: `codegraph scip-refresh` exit code 0 means
+  "SCIP graph is fresh"; it does NOT guarantee derived data
+  (framework tags, scope-resolved edges) finished cleanly. Phase 3 /
+  resolution errors are surfaced via stderr, the per-run log file, and
+  the sidecar's `lastError` field, but the exit code stays 0 because
+  the SCIP data itself is correct. Scripts that gate on "fully clean
+  refresh" should also check `.codegraph/scip-last-refresh.json`'s
+  `lastError` field — see [docs/scheduling/README.md](docs/scheduling/README.md#exit-codes).
+
+[0.9.0]: https://github.com/colbymchenry/codegraph/releases/tag/v0.9.0
+
 ## [0.8.0] - 2026-05-23
 
 ### Added

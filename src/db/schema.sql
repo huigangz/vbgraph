@@ -2,7 +2,7 @@
 -- This file is the full current schema (applied verbatim to fresh databases).
 -- Existing databases are upgraded incrementally by src/db/migrations.ts —
 -- every change here must have a matching migration entry there.
--- Current schema version: 6 (see CURRENT_SCHEMA_VERSION in migrations.ts).
+-- Current schema version: 7 (see CURRENT_SCHEMA_VERSION in migrations.ts).
 
 -- Schema version tracking
 CREATE TABLE IF NOT EXISTS schema_versions (
@@ -164,6 +164,13 @@ CREATE INDEX IF NOT EXISTS idx_edges_provenance ON edges(provenance);
 CREATE INDEX IF NOT EXISTS idx_nodes_provenance ON nodes(provenance);
 CREATE INDEX IF NOT EXISTS idx_nodes_scip_symbol ON nodes(scip_symbol) WHERE scip_symbol IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_nodes_scip_index ON nodes(scip_index_path) WHERE scip_index_path IS NOT NULL;
+
+-- Stale-row partial indexes (schema v7) — accelerate freshPredicate's negative
+-- space and visibleNodeIdPredicate's NOT IN hidden-set subquery. Tiny in the
+-- common case (zero hidden rows on a freshly-refreshed DB) and add no write
+-- overhead for the dominant INSERT path that writes stale=0.
+CREATE INDEX IF NOT EXISTS idx_nodes_stale ON nodes(stale) WHERE stale = 1;
+CREATE INDEX IF NOT EXISTS idx_edges_stale ON edges(stale) WHERE stale = 1;
 
 -- Edge dedup unique index (schema v5): includes line/col so the same
 -- caller->callee at different source positions stays a distinct row.

@@ -1,0 +1,114 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  CodeGraph SCIP-refresh Windows Task Scheduler template.
+
+  WHAT IT DOES
+    Runs `codegraph scip-refresh` nightly at 03:00 local time.
+
+  ENCODING NOTE
+    This template is stored as UTF-8 to match its actual bytes on disk
+    (and is loadable by recent schtasks builds as-is). Older Windows
+    schtasks versions (≤ Server 2012) reject anything that isn't UTF-16
+    with a "The task XML contains a value which is incorrectly formatted
+    or out of range" error. If you hit that, convert before importing:
+      powershell -Command "Get-Content codegraph-scip-refresh.xml | Set-Content -Encoding Unicode codegraph-scip-refresh-utf16.xml"
+    Then ALSO change the encoding declaration in the converted file to
+    `encoding="UTF-16"`.
+
+  HOW TO INSTALL
+    1. Save this file as codegraph-scip-refresh.xml.
+    2. Replace THREE placeholders below (use Windows-style paths with \):
+         REPLACE_WITH_CODEGRAPH   →  full path to codegraph.cmd  e.g. C:\Users\you\AppData\Roaming\npm\codegraph.cmd
+         REPLACE_WITH_PROJECT     →  absolute path to project root  e.g. C:\Users\you\repo\MyProject
+         REPLACE_WITH_USER        →  domain\username                 e.g. DESKTOP-X\you
+    3. Register via PowerShell (admin not required for HKCU tasks):
+         schtasks /Create /XML codegraph-scip-refresh.xml /TN "CodeGraphScipRefresh"
+    4. Verify next run:
+         schtasks /Query /TN "CodeGraphScipRefresh" /V /FO LIST
+
+  HOW TO UNINSTALL
+    schtasks /Delete /TN "CodeGraphScipRefresh" /F
+
+  EXIT CODES (per design § P2.3)
+    0 = ok, 1 = indexer failed, 2 = ingest failed (incl. post-ingest assertion)
+    Task Scheduler History pane surfaces non-zero exits with "Last Run Result"
+    matching the exit code.
+
+  WARNINGS ON EXIT 0
+    Phase 3 / resolution rebuild failures intentionally retain exit code 0
+    (the SCIP data IS fresh; only derived state failed). Task Scheduler
+    captures only the exit code by default and does NOT redirect stdout/
+    stderr — so a derived-data warning would otherwise be invisible.
+    CodeGraph persists the warning in TWO places that this template's
+    <PROJECT>\.codegraph\ directory always retains:
+      (a) <PROJECT>\.codegraph\logs\scip-refresh-<timestamp>.log
+          — append section "[codegraph derived-data warning <iso>]" at
+            the end of the file when applicable.
+      (b) <PROJECT>\.codegraph\scip-last-refresh.json
+          — `lastError` field (null on clean refresh).
+    To monitor for warnings in scheduled runs, poll either file. The
+    `codegraph status` command surfaces the same information in its
+    "Last refresh" output.
+
+    For stderr capture (parity with launchd / journald), wrap with cmd.exe:
+      <Command>cmd.exe</Command>
+      <Arguments>/c "REPLACE_WITH_CODEGRAPH scip-refresh --quiet "REPLACE_WITH_PROJECT" 2&gt;&gt; "REPLACE_WITH_PROJECT\.codegraph\logs\scheduler-stderr.log""</Arguments>
+
+  LOGS
+    Per-run output:  <PROJECT>\.codegraph\logs\scip-refresh-<timestamp>.log
+    Sidecar:         <PROJECT>\.codegraph\scip-last-refresh.json
+-->
+<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <URI>\CodeGraphScipRefresh</URI>
+    <Description>Re-run SCIP indexer and re-ingest output. See https://github.com/colbymchenry/codegraph</Description>
+  </RegistrationInfo>
+
+  <Triggers>
+    <CalendarTrigger>
+      <!-- 2026-01-01 is just the "start" anchor; the actual trigger
+           fires daily at 03:00 regardless of the year here. -->
+      <StartBoundary>2026-01-01T03:00:00</StartBoundary>
+      <Enabled>true</Enabled>
+      <ScheduleByDay>
+        <DaysInterval>1</DaysInterval>
+      </ScheduleByDay>
+    </CalendarTrigger>
+  </Triggers>
+
+  <Principals>
+    <Principal id="Author">
+      <UserId>REPLACE_WITH_USER</UserId>
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>true</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>true</StopIfGoingOnBatteries>
+    <AllowHardTerminate>true</AllowHardTerminate>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
+    <IdleSettings>
+      <StopOnIdleEnd>false</StopOnIdleEnd>
+      <RestartOnIdle>false</RestartOnIdle>
+    </IdleSettings>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <Enabled>true</Enabled>
+    <Hidden>false</Hidden>
+    <RunOnlyIfIdle>false</RunOnlyIfIdle>
+    <WakeToRun>false</WakeToRun>
+    <ExecutionTimeLimit>PT30M</ExecutionTimeLimit>
+    <Priority>7</Priority>
+  </Settings>
+
+  <Actions Context="Author">
+    <Exec>
+      <Command>REPLACE_WITH_CODEGRAPH</Command>
+      <Arguments>scip-refresh --quiet "REPLACE_WITH_PROJECT"</Arguments>
+      <WorkingDirectory>REPLACE_WITH_PROJECT</WorkingDirectory>
+    </Exec>
+  </Actions>
+</Task>

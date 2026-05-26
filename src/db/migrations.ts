@@ -9,7 +9,7 @@ import { SqliteDatabase } from './sqlite-adapter';
 /**
  * Current schema version
  */
-export const CURRENT_SCHEMA_VERSION = 6;
+export const CURRENT_SCHEMA_VERSION = 7;
 
 /**
  * Migration definition
@@ -159,6 +159,28 @@ const migrations: Migration[] = [
         );
         CREATE INDEX IF NOT EXISTS idx_node_tags_tag      ON node_tags(tag);
         CREATE INDEX IF NOT EXISTS idx_node_tags_added_by ON node_tags(added_by);
+      `);
+    },
+  },
+  {
+    version: 7,
+    description:
+      'P2.1 stale-aware queries: partial indexes on stale=1 for fast hidden-set lookup',
+    up: (db) => {
+      // The `stale` and `staleness_visible` columns themselves landed in v5.
+      // P2.1 only adds partial indexes for fast lookup of hidden-stale rows.
+      //
+      // `WHERE stale = 1` is the hot path:
+      //   - freshPredicate's negative space (rows hidden by the default filter)
+      //   - visibleNodeIdPredicate's subquery (NOT IN hidden-node-id set)
+      //   - status command's hidden-stale counts
+      //
+      // Partial indexes are tiny in the common case (zero hidden rows on a
+      // freshly-refreshed DB) and don't add write overhead for the dominant
+      // INSERT path that writes stale=0.
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_nodes_stale ON nodes(stale) WHERE stale = 1;
+        CREATE INDEX IF NOT EXISTS idx_edges_stale ON edges(stale) WHERE stale = 1;
       `);
     },
   },

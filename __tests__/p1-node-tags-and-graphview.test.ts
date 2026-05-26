@@ -59,8 +59,8 @@ function makeNode(id: string, name: string, overrides: Partial<Node> = {}): Node
 }
 
 describe('P1.1 — schema v6 + node_tags', () => {
-  it('CURRENT_SCHEMA_VERSION is 6', () => {
-    expect(CURRENT_SCHEMA_VERSION).toBe(6);
+  it('CURRENT_SCHEMA_VERSION is at least 6 (v6 artifacts ship in every later version)', () => {
+    expect(CURRENT_SCHEMA_VERSION).toBeGreaterThanOrEqual(6);
   });
 
   it('fresh database includes node_tags + indexes', () => {
@@ -70,27 +70,39 @@ describe('P1.1 — schema v6 + node_tags', () => {
       expect(objectExists(db, 'table', 'node_tags')).toBe(true);
       expect(objectExists(db, 'index', 'idx_node_tags_tag')).toBe(true);
       expect(objectExists(db, 'index', 'idx_node_tags_added_by')).toBe(true);
-      expect(conn.getSchemaVersion()?.version).toBe(6);
+      expect(conn.getSchemaVersion()?.version).toBe(CURRENT_SCHEMA_VERSION);
     } finally {
       conn.close();
     }
   });
 
-  it('v5 → v6 migration adds node_tags + indexes', () => {
+  it('v5 → current migration adds v6 node_tags + indexes (and any later artifacts)', () => {
     const dbPath = path.join(tmpDir, 'v5.db');
     const { db } = createDatabase(dbPath);
     try {
-      // Seed a minimal v5-shaped database.
+      // Seed a minimal v5-shaped database. Needs at least `nodes` and `edges`
+      // tables for the v7 migration's `CREATE INDEX ... ON nodes/edges WHERE
+      // stale = 1` to succeed — those columns were added in v5 with DEFAULT 0,
+      // so the fixture must include them too.
       db.exec(`
         CREATE TABLE schema_versions (
           version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL, description TEXT
         );
         INSERT INTO schema_versions VALUES (5, 0, 'v5 baseline');
+        CREATE TABLE nodes (
+          id TEXT PRIMARY KEY, file_path TEXT,
+          stale INTEGER DEFAULT 0, staleness_visible INTEGER DEFAULT 0
+        );
+        CREATE TABLE edges (
+          id INTEGER PRIMARY KEY AUTOINCREMENT, source TEXT, target TEXT,
+          stale INTEGER DEFAULT 0, staleness_visible INTEGER DEFAULT 0
+        );
       `);
 
       expect(objectExists(db, 'table', 'node_tags')).toBe(false);
       runMigrations(db, 5);
-      expect(getCurrentVersion(db)).toBe(6);
+      // v5 → CURRENT runs every pending migration in order (v6, v7, …).
+      expect(getCurrentVersion(db)).toBe(CURRENT_SCHEMA_VERSION);
       expect(objectExists(db, 'table', 'node_tags')).toBe(true);
       expect(objectExists(db, 'index', 'idx_node_tags_tag')).toBe(true);
       expect(objectExists(db, 'index', 'idx_node_tags_added_by')).toBe(true);
@@ -98,7 +110,7 @@ describe('P1.1 — schema v6 + node_tags', () => {
       // Idempotent: re-running with the recorded version is a no-op
       // (filter `m.version > fromVersion` keeps nothing).
       runMigrations(db, getCurrentVersion(db));
-      expect(getCurrentVersion(db)).toBe(6);
+      expect(getCurrentVersion(db)).toBe(CURRENT_SCHEMA_VERSION);
     } finally {
       db.close();
     }

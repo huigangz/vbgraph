@@ -973,6 +973,57 @@ export class ExtractionOrchestrator {
   /**
    * Index a single file
    */
+  /**
+   * Tree-sitter shadow extraction (P2.2): same as `indexFile` but uses
+   * `storeExtractionResult(_, mode='shadow')` so the caller's preceding
+   * provenance-scoped delete + SCIP stale-marking is preserved.
+   *
+   * Caller responsibilities BEFORE calling:
+   *  1. `queries.markScipFileStale(filePath, 0)` — flip SCIP rows hidden-stale.
+   *  2. `queries.deleteFileTreeSitterRows(filePath)` — clear any prior shadow.
+   *
+   * On return: fresh tree-sitter nodes/edges exist for `filePath`, SCIP rows
+   * for the same file remain in the DB (hidden by default queries).
+   */
+  async indexFileShadow(relativePath: string): Promise<ExtractionResult> {
+    const fullPath = validatePathWithinRoot(this.rootDir, relativePath);
+    if (!fullPath) {
+      return {
+        nodes: [], edges: [], unresolvedReferences: [],
+        errors: [{ message: `Path traversal blocked: ${relativePath}`, filePath: relativePath, severity: 'error', code: 'path_traversal' }],
+        durationMs: 0,
+      };
+    }
+    let content: string;
+    let stats: fs.Stats;
+    try {
+      stats = await fsp.stat(fullPath);
+      content = await fsp.readFile(fullPath, 'utf-8');
+    } catch (error) {
+      return {
+        nodes: [], edges: [], unresolvedReferences: [],
+        errors: [{ message: `Failed to read file: ${error instanceof Error ? error.message : String(error)}`, filePath: relativePath, severity: 'error', code: 'read_error' }],
+        durationMs: 0,
+      };
+    }
+    if (stats.size > this.config.maxFileSize) {
+      return {
+        nodes: [], edges: [], unresolvedReferences: [],
+        errors: [{ message: `File exceeds max size (${stats.size} > ${this.config.maxFileSize})`, filePath: relativePath, severity: 'warning', code: 'size_exceeded' }],
+        durationMs: 0,
+      };
+    }
+    const language = detectLanguage(relativePath, content);
+    if (!isLanguageSupported(language)) {
+      return { nodes: [], edges: [], unresolvedReferences: [], errors: [], durationMs: 0 };
+    }
+    const result = extractFromSource(relativePath, content, language);
+    if (result.nodes.length > 0 || result.errors.length === 0) {
+      this.storeExtractionResult(relativePath, content, language, stats, result, 'shadow');
+    }
+    return result;
+  }
+
   async indexFile(relativePath: string): Promise<ExtractionResult> {
     const fullPath = validatePathWithinRoot(this.rootDir, relativePath);
 
@@ -1078,14 +1129,26 @@ export class ExtractionOrchestrator {
   }
 
   /**
-   * Store extraction result in database
+   * Store extraction result in database.
+   *
+   * `mode` controls the pre-insert cleanup (P2.2.4):
+   *  - `'replace'` (default): full `deleteFile(filePath)` — wipes ALL rows for
+   *    this file regardless of provenance. Correct for `indexAll`, full
+   *    re-extraction, and any sync path on files NOT covered by SCIP.
+   *  - `'shadow'`: caller has already done a provenance-scoped delete via
+   *    `deleteFileTreeSitterRows(filePath)` AND marked the SCIP-owned rows
+   *    stale via `markScipFileStale(filePath, 0)`. This method skips the
+   *    `deleteFile` step so SCIP rows survive (hidden by the freshness filter).
+   *    Used by the sync shadow path for SCIP-covered files in shadow-capable
+   *    languages.
    */
   private storeExtractionResult(
     filePath: string,
     content: string,
     language: Language,
     stats: fs.Stats,
-    result: ExtractionResult
+    result: ExtractionResult,
+    mode: 'replace' | 'shadow' = 'replace',
   ): void {
     const contentHash = hashContent(content);
 
@@ -1095,8 +1158,11 @@ export class ExtractionOrchestrator {
       return; // No changes
     }
 
-    // Delete existing data for this file
-    if (existingFile) {
+    // Delete existing data for this file. In `'shadow'` mode the caller has
+    // already done a provenance-scoped delete (tree-sitter rows only) and
+    // marked SCIP rows stale; we MUST NOT run the provenance-blind deleteFile
+    // here, or we'd wipe the SCIP rows the shadow path is meant to preserve.
+    if (existingFile && mode === 'replace') {
       this.queries.deleteFile(filePath);
     }
 
@@ -1274,6 +1340,34 @@ export class ExtractionOrchestrator {
       await loadGrammarsForLanguages(neededLanguages);
     }
 
+    // P2.2.4: partition changed files into SCIP-covered vs not. SCIP-covered
+    // files take the shadow path (preserve SCIP rows, mark stale, run tree-
+    // sitter alongside). Non-SCIP files take the existing replace path.
+    const scipChanged: string[] = [];
+    const nonScipChanged: string[] = [];
+    for (const filePath of filesToIndex) {
+      if (this.queries.isFileScipCovered(filePath)) {
+        scipChanged.push(filePath);
+      } else {
+        nonScipChanged.push(filePath);
+      }
+    }
+
+    // P2.2.5: branch-switch defense. If the SCIP-covered changed set exceeds
+    // the threshold, mark in bulk (visible=1) and skip per-file shadow — the
+    // user is expected to run `codegraph scip-refresh` to restore precision.
+    const maxStale = this.config.maxStaleFilesPerSync ?? 50;
+    const bulkBranchSwitch = scipChanged.length > maxStale;
+
+    if (bulkBranchSwitch && scipChanged.length > 0) {
+      const summary = this.queries.bulkMarkScipFilesStale(scipChanged, 1);
+      logWarn(
+        `[codegraph] Branch switch detected (${summary.filesAffected} SCIP-covered files changed; ` +
+          `threshold = ${maxStale}). Skipping per-file shadow extraction; SCIP data is now ` +
+          `marked stale-but-visible. Run 'codegraph scip-refresh' to restore precision.`,
+      );
+    }
+
     // Index changed files
     const total = filesToIndex.length;
     for (let i = 0; i < filesToIndex.length; i++) {
@@ -1285,6 +1379,30 @@ export class ExtractionOrchestrator {
         currentFile: filePath,
       });
 
+      const isScip = this.queries.isFileScipCovered(filePath);
+
+      if (isScip && bulkBranchSwitch) {
+        // Bulk-marked above; no per-file work.
+        continue;
+      }
+
+      if (isScip) {
+        // Per-file shadow path.
+        const language = detectLanguage(filePath);
+        if (isLanguageSupported(language)) {
+          // Shadow-capable: hide SCIP rows, drop prior shadow, re-extract.
+          this.queries.markScipFileStale(filePath, 0);
+          this.queries.deleteFileTreeSitterRows(filePath);
+          const result = await this.indexFileShadow(filePath);
+          nodesUpdated += result.nodes.length;
+        } else {
+          // No grammar: SCIP rows stay visible-stale; no extraction.
+          this.queries.markScipFileStale(filePath, 1);
+        }
+        continue;
+      }
+
+      // Non-SCIP-covered file: existing replace path.
       const result = await this.indexFile(filePath);
       nodesUpdated += result.nodes.length;
     }

@@ -24,6 +24,11 @@ import {
   BuildContextOptions,
   FindRelevantContextOptions,
   Language,
+  ScipRefreshOptions,
+  ScipRefreshResult,
+  ScipLastRefresh,
+  LanguageTier,
+  StaleSummary,
 } from './types';
 import { DatabaseConnection, getDatabasePath } from './db';
 import { QueryBuilder } from './db/queries';
@@ -54,6 +59,9 @@ import {
   MultiIndexConflictError,
   writeScipFailureLedger,
   classifyScipFailureMode,
+  detectInstalledScipIndexers,
+  buildScipCoverageMap,
+  SCIP_INDEXERS,
   type ScipFailure,
   type EmptyDocumentFallback,
 } from './extraction/scip';
@@ -148,6 +156,59 @@ export interface IndexOptions {
 
   /** Restrict `--scip-auto` to this language subset (by language name). */
   languages?: string[];
+}
+
+/**
+ * Tokenize a shell command string into argv tokens, respecting quoted
+ * substrings so paths with spaces survive. Used by `refreshScip` when
+ * `scipRefreshCommand` is provided as a string rather than an array.
+ *
+ * Supported:
+ *  - whitespace separates tokens
+ *  - "double" and 'single' quoted runs are kept intact (quotes stripped)
+ *  - inside double quotes, `\"` escapes a literal `"`; `\\` escapes `\`
+ *  - inside single quotes, content is literal (no escapes — POSIX shell rule)
+ *
+ * Not supported (and not needed for the indexer-command use case):
+ *  - $variable expansion
+ *  - backtick command substitution
+ *  - redirection / pipes
+ *
+ * If users hit anything more elaborate, they should use the array form.
+ */
+function tokenizeShellCommand(input: string): string[] {
+  const out: string[] = [];
+  let buf = '';
+  let inSingle = false;
+  let inDouble = false;
+  let hasBuf = false;
+  for (let i = 0; i < input.length; i++) {
+    const c = input[i]!;
+    if (inSingle) {
+      if (c === "'") { inSingle = false; continue; }
+      buf += c; hasBuf = true; continue;
+    }
+    if (inDouble) {
+      if (c === '\\' && i + 1 < input.length) {
+        const next = input[i + 1]!;
+        if (next === '"' || next === '\\') { buf += next; hasBuf = true; i++; continue; }
+        // Unknown escape — preserve the backslash so Windows paths
+        // (e.g. "C:\path") don't lose characters when quoted.
+        buf += c; hasBuf = true; continue;
+      }
+      if (c === '"') { inDouble = false; continue; }
+      buf += c; hasBuf = true; continue;
+    }
+    if (c === "'") { inSingle = true; hasBuf = true; continue; }
+    if (c === '"') { inDouble = true; hasBuf = true; continue; }
+    if (/\s/.test(c)) {
+      if (hasBuf) { out.push(buf); buf = ''; hasBuf = false; }
+      continue;
+    }
+    buf += c; hasBuf = true;
+  }
+  if (hasBuf) out.push(buf);
+  return out;
 }
 
 /**
@@ -354,6 +415,49 @@ export class CodeGraph {
   }
 
   /**
+   * Build the `extractFallback` callback passed to `ingestScipFile`, used
+   * by `persistScipIndex` STAGE E for SCIP documents with zero occurrences.
+   * Shared between `runScipPrePass` (called from `indexAll`) and
+   * `refreshScip` (P2.3) so both paths recreate empty-doc fallback rows
+   * after the broader `supersedeTreeSitter` (P2.3.1) wipes them.
+   *
+   * Loads grammars for the requested languages first because the fallback
+   * runs synchronously inside the persister — grammars must be in process
+   * memory before ingest begins. Pass an empty / single-element set when
+   * the caller doesn't know the full language list; `loadGrammarsForLanguages`
+   * is no-op for already-loaded grammars.
+   */
+  private async buildEmptyDocFallback(
+    coveredLanguages: ReadonlySet<Language>,
+  ): Promise<EmptyDocumentFallback> {
+    const fallbackLanguages = [...coveredLanguages].filter(
+      (lang) => lang !== 'unknown' && lang !== 'external' && isLanguageSupported(lang)
+    );
+    if (fallbackLanguages.length > 0) {
+      await initGrammars();
+      await loadGrammarsForLanguages(fallbackLanguages);
+    }
+    return (absFilePath, relativePath) => {
+      try {
+        const content = fs.readFileSync(absFilePath, 'utf-8');
+        // Use the relative path for extraction so node `filePath`s match the
+        // rest of the graph; read the content from the resolved absolute path.
+        const extracted = extractFromSource(relativePath, content);
+        // Pass `unresolvedReferences` through too — the resolver pass turns
+        // them into call/import/type edges, so an empty-fallback file is
+        // indexed exactly like a normal tree-sitter file.
+        return {
+          nodes: extracted.nodes,
+          edges: extracted.edges,
+          unresolvedReferences: extracted.unresolvedReferences,
+        };
+      } catch {
+        return null;
+      }
+    };
+  }
+
+  /**
    * SCIP pre-pass for `indexAll`: resolve `.scip` sources (explicit `--scip`
    * paths, config `scipSources`, and `--scip-auto` spawn output), ingest them,
    * and return the set of repo-relative source files now covered by SCIP — the
@@ -502,31 +606,7 @@ export class CodeGraph {
     // `persistScipIndex` does this via `extractFallback` — but the fallback
     // runs synchronously inside the persister, so the grammars for the
     // covered languages must be loaded into this process first.
-    const fallbackLanguages = [...coveredLanguages].filter(
-      (lang) => lang !== 'unknown' && lang !== 'external' && isLanguageSupported(lang)
-    );
-    if (fallbackLanguages.length > 0) {
-      await initGrammars();
-      await loadGrammarsForLanguages(fallbackLanguages);
-    }
-    const extractFallback: EmptyDocumentFallback = (absFilePath, relativePath) => {
-      try {
-        const content = fs.readFileSync(absFilePath, 'utf-8');
-        // Use the relative path for extraction so node `filePath`s match the
-        // rest of the graph; read the content from the resolved absolute path.
-        const extracted = extractFromSource(relativePath, content);
-        // Pass `unresolvedReferences` through too — the resolver pass turns
-        // them into call/import/type edges, so an empty-fallback file is
-        // indexed exactly like a normal tree-sitter file.
-        return {
-          nodes: extracted.nodes,
-          edges: extracted.edges,
-          unresolvedReferences: extracted.unresolvedReferences,
-        };
-      } catch {
-        return null;
-      }
-    };
+    const extractFallback = await this.buildEmptyDocFallback(coveredLanguages);
     const ingestOptions = {
       db,
       qb: this.queries,
@@ -849,6 +929,429 @@ export class CodeGraph {
   }
 
   // ===========================================================================
+  // SCIP refresh (P2.3)
+  // ===========================================================================
+
+  /**
+   * Build the per-run log file's WriteStream. Exists as a separate instance
+   * method (rather than an inlined `fs.createWriteStream` call inside
+   * `refreshScip`) purely as a test seam: refresh's log-stream failure
+   * paths (open / mid-stream / flush-time errors) are unreachable from
+   * the real filesystem in a portable way, so the regression test
+   * (`p2-review-fixes.test.ts`) monkey-patches this method on a single
+   * CodeGraph instance to inject a synthetic failure shape.
+   *
+   * Not part of the public API. Production behavior is identical to
+   * `fs.createWriteStream(logPath, { flags: 'w' })`.
+   */
+  private createRefreshLogStream(logPath: string): fs.WriteStream {
+    return fs.createWriteStream(logPath, { flags: 'w' });
+  }
+
+  /**
+   * Spawn the configured SCIP indexer (`config.scipRefreshCommand`,
+   * default `'scip-dotnet index ./'`) and re-ingest its output. After
+   * ingest, runs the post-ingest assertion (narrow — exact-match
+   * `provenance = 'tree-sitter'` rows must be 0 for each refreshed
+   * file; fallback rows are legitimately re-created), then reruns
+   * resolution + Phase 3 so derived data stays consistent. Recoverable
+   * Phase 3 errors surface via `result.error` (stderr + per-run log
+   * append + sidecar `lastError`) without demoting `phase` from `'ok'`.
+   *
+   * Concurrency: serialized by the in-process `indexMutex` AND the
+   * cross-process `FileLock` at `.codegraph/codegraph.lock`. Two
+   * processes invoking refresh concurrently: the late arrival returns
+   * `phase = 'lock-failed'` without touching the database.
+   *
+   * Writes spawn stdout/stderr to `.codegraph/logs/scip-refresh-<ts>.log`
+   * and a status sidecar at `.codegraph/scip-last-refresh.json`.
+   *
+   * @returns ScipRefreshResult with phase + counts. The caller (CLI) maps
+   *          phase to exit code:
+   *            - `'ok'`            → 0
+   *            - `'spawn-failed'`  → 1
+   *            - `'lock-failed'`   → 1 (cross-process FileLock contended)
+   *            - `'ingest-failed'` → 2
+   */
+  async refreshScip(options: ScipRefreshOptions = {}): Promise<ScipRefreshResult> {
+    return this.indexMutex.withLock(async () => {
+      const startedAt = Date.now();
+      // Cross-process safety: indexMutex covers in-process concurrency, but
+      // two `codegraph` processes (e.g. CLI + scheduled refresh, or two
+      // scheduled jobs that overlapped) would otherwise race STAGE B
+      // deletes against each other. Same FileLock pattern as indexAll / sync.
+      try {
+        this.fileLock.acquire();
+      } catch {
+        return {
+          phase: 'lock-failed',
+          error: 'Could not acquire file lock — another codegraph process is indexing or refreshing',
+          spawnExitCode: null,
+          scipPath: null,
+          filesCovered: 0,
+          durationMs: Date.now() - startedAt,
+          logPath: null,
+        };
+      }
+      try {
+      const codegraphDir = path.join(this.projectRoot, '.codegraph');
+      const logsDir = path.join(codegraphDir, 'logs');
+      fs.mkdirSync(logsDir, { recursive: true });
+
+      // 1. Spawn the configured indexer.
+      const commandSpec =
+        options.command ?? this.config.scipRefreshCommand ?? 'scip-dotnet index ./';
+      // Single-string form gets tokenized respecting double + single quotes.
+      // Previously a naive split(/\s+/) mis-tokenized paths with spaces — e.g.
+      // `"C:\\Program Files\\scip\\scip-dotnet" index ./` would split into 4
+      // tokens, none of which is a valid executable. Array form bypasses this
+      // entirely (each element is one argv slot). Documented in the config
+      // type's JSDoc.
+      const [cmd, ...args] = Array.isArray(commandSpec)
+        ? commandSpec
+        : tokenizeShellCommand(commandSpec);
+      if (!cmd) {
+        return {
+          phase: 'spawn-failed',
+          error: 'scipRefreshCommand is empty',
+          spawnExitCode: null,
+          scipPath: null,
+          filesCovered: 0,
+          durationMs: Date.now() - startedAt,
+          logPath: null,
+        };
+      }
+
+      const ts = new Date().toISOString().replace(/[:.]/g, '-');
+      const logPath = path.join(logsDir, `scip-refresh-${ts}.log`);
+      const { spawn } = await import('child_process');
+      // Indirection via instance method (not inlined fs.createWriteStream)
+      // so refresh's log-stream failure paths can be exercised in tests by
+      // monkey-patching this single method on the CodeGraph instance.
+      // Production callers never touch this — it has the same behavior as
+      // `fs.createWriteStream(logPath, { flags: 'w' })` and is not part of
+      // the public API surface.
+      const logStream = this.createRefreshLogStream(logPath);
+
+      // Attach the error listener BEFORE anything pipes into the stream.
+      // createWriteStream resolves the underlying open() on a microtask;
+      // an EACCES/ENOSPC/EROFS/ENOENT or any later write failure will
+      // emit 'error' asynchronously. Without a listener attached
+      // synchronously, Node treats it as an unhandled emitter error and
+      // crashes the whole process — exactly the failure mode a scheduled
+      // `scip-refresh --quiet` cannot tolerate.
+      //
+      // A mid-run log-stream error (logStream errors while the child is
+      // still spewing output) creates a second hazard: pipe() auto-unpipes
+      // on downstream error, the child's stdout/stderr have no consumer,
+      // their kernel pipe buffers fill, the child blocks on write, and
+      // our `await child.close()` never resolves → refresh hangs forever.
+      // The handler below addresses that by killing the child and
+      // resuming its stdio readables (so any in-flight pipe-buffer bytes
+      // drain to a no-op consumer) the moment logStream errors.
+      let logStreamError: Error | null = null;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      let childRef: any = null;
+      logStream.on('error', (err) => {
+        if (!logStreamError) logStreamError = err;
+        // Defense against the noisy-child hang. If the child is still
+        // running, kill it and drain its readables so the spawn Promise
+        // resolves promptly with a non-zero exit. If the child has
+        // already exited, this is a no-op.
+        if (childRef) {
+          try { childRef.stdout?.resume(); } catch { /* ignore */ }
+          try { childRef.stderr?.resume(); } catch { /* ignore */ }
+          if (childRef.exitCode === null && !childRef.killed) {
+            try { childRef.kill(); } catch { /* ignore */ }
+          }
+        }
+      });
+
+      const exitCode = await new Promise<number | null>((resolve) => {
+        const child = spawn(cmd, args, {
+          cwd: this.projectRoot,
+          stdio: ['ignore', 'pipe', 'pipe'],
+        });
+        childRef = child;
+        // Absorb pipe-source errors so they don't bubble up. When
+        // logStream errors, the upstream readable's `pipe()` machinery
+        // unpipes and emits 'error' on the source; the real cause is
+        // captured in logStreamError above.
+        child.stdout.on('error', () => { /* absorbed */ });
+        child.stderr.on('error', () => { /* absorbed */ });
+        child.stdout.pipe(logStream, { end: false });
+        child.stderr.pipe(logStream, { end: false });
+        child.on('close', (code) => resolve(code));
+        child.on('error', () => resolve(null));
+      });
+
+      // If the log stream errored at any point (file open failure or
+      // mid-stream write failure such as disk-full), bail out with a
+      // structured result instead of letting later code race the
+      // half-dead stream.
+      if (logStreamError) {
+        try { logStream.end(); } catch { /* ignore */ }
+        const lse: Error = logStreamError;
+        return {
+          phase: 'spawn-failed',
+          error: `Refresh log file unwritable (${lse.message}); refresh aborted before ingest`,
+          spawnExitCode: exitCode,
+          scipPath: null,
+          filesCovered: 0,
+          durationMs: Date.now() - startedAt,
+          logPath,
+        };
+      }
+
+      // Close the pipe stream and WAIT for the OS to flush all buffered
+      // stdout/stderr bytes to disk before we (potentially) appendFileSync
+      // a derived-data warning to the same path. logStream.end() returns
+      // synchronously but the underlying fd close is async — without
+      // waiting, the appendFileSync below can interleave with pending
+      // pipe writes, scrambling the log order or truncating indexer output.
+      //
+      // The on('error') listener attached above stays in scope here, so
+      // a flush-time write failure (ENOSPC, EDQUOT, EIO on close) is
+      // captured into logStreamError rather than crashing the process.
+      // The local 'error' listener inside this Promise resolves the wait
+      // promptly without unhandled-rejection noise.
+      await new Promise<void>((resolve) => {
+        logStream.once('finish', resolve);
+        logStream.once('error', () => resolve());
+        logStream.end();
+      });
+
+      // Re-check AFTER the flush wait: an error event during final
+      // buffer drain or fd close would have populated logStreamError
+      // post-spawn-promise. If we let refresh continue here, ingest
+      // proceeds and `phase: 'ok'` would be returned despite the per-run
+      // log being silently incomplete — exactly the failure mode that
+      // makes scheduled-refresh diagnosis impossible.
+      if (logStreamError) {
+        const lse: Error = logStreamError;
+        return {
+          phase: 'spawn-failed',
+          error: `Refresh log file flush failed (${lse.message}); refresh aborted before ingest`,
+          spawnExitCode: exitCode,
+          scipPath: null,
+          filesCovered: 0,
+          durationMs: Date.now() - startedAt,
+          logPath,
+        };
+      }
+
+      if (exitCode !== 0) {
+        return {
+          phase: 'spawn-failed',
+          error: `Indexer exited with code ${exitCode}`,
+          spawnExitCode: exitCode,
+          scipPath: null,
+          filesCovered: 0,
+          durationMs: Date.now() - startedAt,
+          logPath,
+        };
+      }
+
+      // 2. Ingest the produced `.scip`.
+      const outputRel =
+        options.scipOutputPath ?? this.config.scipRefreshOutputPath ?? './index.scip';
+      const scipPath = path.resolve(this.projectRoot, outputRel);
+      if (!fs.existsSync(scipPath)) {
+        return {
+          phase: 'spawn-failed',
+          error: `Indexer succeeded but expected output not found at ${scipPath}`,
+          spawnExitCode: exitCode,
+          scipPath,
+          filesCovered: 0,
+          durationMs: Date.now() - startedAt,
+          logPath,
+        };
+      }
+
+      // Review fix #1: build the empty-doc fallback the persister needs.
+      // Scan the .scip ahead of ingest to learn which languages its
+      // documents cover, then load those grammars so `maybeEmptyFallback`
+      // can synchronously call `extractFromSource` per empty doc. Without
+      // this, `supersedeTreeSitter` (LIKE 'tree-sitter%') wipes prior
+      // fallback rows and they're not recreated.
+      const coveredLanguages = new Set<Language>();
+      try {
+        for await (const doc of iterateScipDocuments(scipPath)) {
+          coveredLanguages.add(detectLanguage(doc.relativePath));
+        }
+      } catch (err) {
+        return {
+          phase: 'ingest-failed',
+          error: `Failed to pre-scan .scip for fallback languages: ${err instanceof Error ? err.message : String(err)}`,
+          spawnExitCode: exitCode,
+          scipPath,
+          filesCovered: 0,
+          durationMs: Date.now() - startedAt,
+          logPath,
+        };
+      }
+      const extractFallback = await this.buildEmptyDocFallback(coveredLanguages);
+
+      try {
+        await ingestScipFile(scipPath, this.projectRoot, {
+          db: this.db.getDb(),
+          qb: this.queries,
+          emptyFallbackThresholdBytes: this.config.emptyFallbackThresholdBytes,
+          extractFallback,
+        });
+      } catch (err) {
+        return {
+          phase: 'ingest-failed',
+          error: err instanceof Error ? err.message : String(err),
+          spawnExitCode: exitCode,
+          scipPath,
+          filesCovered: 0,
+          durationMs: Date.now() - startedAt,
+          logPath,
+        };
+      }
+
+      // Review fix #2: ingestion did raw DELETE / INSERT OR REPLACE on
+      // nodes (via STAGE B and STAGE E's supersedeTreeSitter). Those
+      // bypass the per-row cache invalidation that insertNode/deleteNode
+      // perform inline. Flush wholesale so getNodeById doesn't serve
+      // pre-refresh cached entries from any caller that warmed the cache
+      // before this refresh started.
+      this.queries.invalidatePhase3Caches();
+
+      // 3. Post-ingest assertion (narrow — round 3 finding 1):
+      //    for every file covered by this scip_index_path, count exact-match
+      //    `provenance = 'tree-sitter'` rows. Must be zero. Fallback rows
+      //    (`'tree-sitter (scip-empty-fallback)'`) are legitimately created
+      //    by STAGE E for empty docs and are NOT counted.
+      const filesCovered = this.queries.getScipDocumentsForIndex(scipPath);
+      const leaked: Array<{ file: string; count: number }> = [];
+      for (const file of filesCovered) {
+        const count = this.queries.countShadowRowsForFile(file);
+        if (count > 0) leaked.push({ file, count });
+      }
+      if (leaked.length > 0) {
+        return {
+          phase: 'ingest-failed',
+          error: `scip-refresh leaked shadow nodes for ${leaked.length} file(s): ` +
+            leaked.slice(0, 5).map((l) => `${l.file} (${l.count})`).join(', ') +
+            (leaked.length > 5 ? `, … (+${leaked.length - 5} more)` : ''),
+          spawnExitCode: exitCode,
+          scipPath,
+          filesCovered: filesCovered.length,
+          durationMs: Date.now() - startedAt,
+          logPath,
+        };
+      }
+
+      // Review fix #3: rebuild derived data. SCIP re-ingest replaces
+      // nodes wholesale via STAGE B. Two layers of derived data must
+      // re-run to stay consistent (this matches what indexAll + sync do
+      // after their own extraction phases):
+      //
+      //  (a) Resolution — the empty-doc fallback inserts unresolved refs
+      //      (since fix #1 wired extractFallback through). Without
+      //      resolving, they sit unprocessed and dependent edges are
+      //      missing.
+      //
+      //  (b) Phase 3 — STAGE 0 inside Phase3Orchestrator purges all
+      //      framework tags + framework-primary edges, then re-runs
+      //      synthesize/augment against the post-refresh graph. Without
+      //      this, framework tags from before the refresh may reference
+      //      nodes whose ids changed (function renamed in the source).
+      //
+      // Errors here are recorded in the result.error string but do NOT
+      // demote the phase to 'ingest-failed' — the SCIP data itself is
+      // fresh; only derived state failed. Caller can inspect logs.
+      const derivedErrors: string[] = [];
+      try {
+        const unresolvedCount = this.queries.getUnresolvedReferencesCount();
+        if (unresolvedCount > 0) {
+          await this.resolveReferencesBatched();
+        }
+      } catch (err) {
+        derivedErrors.push(
+          `resolution failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+      try {
+        const phase3 = new Phase3Orchestrator(this.projectRoot, this.queries);
+        // Round-2 review fix: Phase3Orchestrator returns recoverable
+        // per-resolver errors in `result.errors` rather than throwing.
+        // The previous version ignored them — a refresh that dropped
+        // framework contributions could exit `'ok'` with no warning,
+        // including under scheduled `--quiet` operation. Capture them
+        // into `derivedErrors` so they reach `result.error` and the CLI
+        // surfaces them on the success path.
+        const phase3Result = await phase3.run();
+        for (const e of phase3Result.errors) {
+          derivedErrors.push(
+            `phase 3 ${e.severity}: ${e.message}` + (e.code ? ` (${e.code})` : ''),
+          );
+        }
+      } catch (err) {
+        derivedErrors.push(
+          `phase 3 threw: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+
+      const errorString = derivedErrors.length > 0 ? derivedErrors.join('; ') : null;
+
+      // Round-3 review fix: defense-in-depth for scheduled-refresh warning
+      // capture. The CLI writes the warning to stderr (covers launchd
+      // StandardErrorPath + systemd journald), but Task Scheduler XML
+      // doesn't redirect either stream by default. Persist the same
+      // warning in TWO files schedulers always preserve:
+      //   (a) Append to the per-run log file (which Task Scheduler at
+      //       least pointed users at).
+      //   (b) Write `lastError` into the sidecar so `codegraph status`
+      //       and `cat .codegraph/scip-last-refresh.json` both surface it.
+      if (errorString) {
+        try {
+          fs.appendFileSync(
+            logPath,
+            `\n[codegraph derived-data warning ${new Date().toISOString()}]\n${errorString}\n`,
+          );
+        } catch {
+          // Log append failure is non-fatal — stderr still has it.
+        }
+      }
+
+      // 4. Update the status sidecar.
+      const sidecarPath = path.join(codegraphDir, 'scip-last-refresh.json');
+      const sidecar = {
+        refreshedAt: new Date().toISOString(),
+        scipPath,
+        command: Array.isArray(commandSpec) ? commandSpec.join(' ') : commandSpec,
+        filesCovered: filesCovered.length,
+        durationMs: Date.now() - startedAt,
+        // Round-3 review fix: persistent diagnostic across runs. Null
+        // on a clean refresh; otherwise the same semicolon-joined string
+        // returned as result.error. Surveying tools can poll the sidecar.
+        lastError: errorString,
+      };
+      try {
+        fs.writeFileSync(sidecarPath, JSON.stringify(sidecar, null, 2));
+      } catch {
+        // Sidecar write failure is non-fatal — refresh itself succeeded.
+      }
+
+      return {
+        phase: 'ok',
+        error: errorString,
+        spawnExitCode: exitCode,
+        scipPath,
+        filesCovered: filesCovered.length,
+        durationMs: Date.now() - startedAt,
+        logPath,
+      };
+      } finally {
+        this.fileLock.release();
+      }
+    });
+  }
+
+  // ===========================================================================
   // File Watching
   // ===========================================================================
 
@@ -955,12 +1458,167 @@ export class CodeGraph {
   // ===========================================================================
 
   /**
-   * Get statistics about the knowledge graph
+   * Get statistics about the knowledge graph. Applies the default freshness
+   * filter (excludes hidden-stale rows and edges with hidden-stale endpoints,
+   * per P2.1.7 / design Decision 5).
+   *
+   * @see {@link getStatsIncludingStale} for raw totals.
+   * @see {@link getStaleSummary} for the hidden/visible/fresh breakdown.
    */
   getStats(): GraphStats {
     const stats = this.queries.getStats();
     stats.dbSizeBytes = this.db.getSize();
     return stats;
+  }
+
+  /**
+   * Raw graph statistics WITHOUT the default freshness filter — includes
+   * hidden-stale rows and edges with hidden-stale endpoints. Use for status
+   * diagnostics or parity checking; do not use as a substitute for `getStats`
+   * unless you specifically need the raw count.
+   *
+   * @see design doc Decision 5 — three-surface model.
+   */
+  getStatsIncludingStale(): GraphStats {
+    const stats = this.queries.getStatsIncludingStale();
+    stats.dbSizeBytes = this.db.getSize();
+    return stats;
+  }
+
+  /**
+   * Decomposed staleness counts — hidden-stale (shadow active) vs visible-stale
+   * (needs refresh, no grammar) vs fresh. Read raw `stale`/`staleness_visible`
+   * columns; designed for `codegraph status` (P2.4) and diagnostics. The
+   * three categories together cover every row.
+   */
+  getStaleSummary(): StaleSummary {
+    return this.queries.getStaleSummary();
+  }
+
+  /**
+   * Review fix #4 (Decision 7 — required diagnostic): count of edges
+   * hidden ONLY because at least one endpoint node is hidden-stale.
+   * Edge-row freshness still applies. Used by `codegraph status` to
+   * report the "Dangling against stale" line — the count of public-API
+   * results suppressed by the endpoint-visibility filter beyond what
+   * row-level staleness alone would hide.
+   */
+  countDanglingEdgesAgainstHiddenStale(): number {
+    return this.queries.countDanglingEdgesAgainstHiddenStale();
+  }
+
+  /**
+   * Read the SCIP refresh sidecar at `.codegraph/scip-last-refresh.json` —
+   * the status record written by the most recent successful
+   * `CodeGraph.refreshScip` call.
+   *
+   * Returns `null` if the file is absent, unreadable, or malformed.
+   * Status (P2.4.4) treats all three cases as "never refreshed"; users
+   * needing the distinction can read the sidecar directly.
+   */
+  getLastScipRefresh(): ScipLastRefresh | null {
+    const sidecarPath = path.join(this.projectRoot, '.codegraph', 'scip-last-refresh.json');
+    try {
+      if (!fs.existsSync(sidecarPath)) return null;
+      const raw = fs.readFileSync(sidecarPath, 'utf-8');
+      const parsed = JSON.parse(raw) as Partial<ScipLastRefresh>;
+      // Minimal shape validation — reject if any required field missing.
+      if (
+        typeof parsed.refreshedAt !== 'string' ||
+        typeof parsed.scipPath !== 'string' ||
+        typeof parsed.command !== 'string' ||
+        typeof parsed.filesCovered !== 'number' ||
+        typeof parsed.durationMs !== 'number'
+      ) {
+        return null;
+      }
+      return {
+        refreshedAt: parsed.refreshedAt,
+        scipPath: parsed.scipPath,
+        command: parsed.command,
+        filesCovered: parsed.filesCovered,
+        durationMs: parsed.durationMs,
+        // `lastError` added in round-3 review. Older sidecars without it
+        // surface as null (backward-compatible). Validate to a string-or-null
+        // shape so a malformed value can't leak through as `undefined`.
+        lastError: typeof parsed.lastError === 'string' ? parsed.lastError : null,
+      };
+    } catch {
+      // Malformed JSON, FS error, permission denied — all treated as "never".
+      return null;
+    }
+  }
+
+  /**
+   * Per-language tier summary — one entry per language with files in the
+   * repo. Combines:
+   *  - DB-side node counts per (language, provenance) — what tier the
+   *    language is actually at.
+   *  - Installed SCIP indexer detection — which languages have an
+   *    available indexer (whether or not Tier 1 is currently active).
+   *  - `SCIP_INDEXERS` spec — install hints for languages where no
+   *    indexer is currently installed.
+   *
+   * Used by `codegraph status` (P2.4.4) to render the per-language tier
+   * display. Returns languages sorted by file count descending.
+   *
+   * Cost: one grouped SQL query (`getNodeCountsByLanguageAndProvenance`)
+   * plus one (cached) `detectInstalledScipIndexers` call. Typical
+   * latency on a fresh process: ~250ms for indexer detection +
+   * sub-ms SQL. Subsequent calls within the same process use the
+   * indexer-detection cache.
+   */
+  async getLanguageTiers(): Promise<LanguageTier[]> {
+    const stats = this.queries.getStats();
+    const filesByLanguage = stats.filesByLanguage;
+
+    // (language, provenance) → count, from one grouped query.
+    const rawCounts = this.queries.getNodeCountsByLanguageAndProvenance();
+    const perLang = new Map<Language, { scip: number; treeSitter: number }>();
+    for (const row of rawCounts) {
+      const entry = perLang.get(row.language) ?? { scip: 0, treeSitter: 0 };
+      if (row.provenance === 'scip') {
+        entry.scip += row.count;
+      } else if (row.provenance.startsWith('tree-sitter')) {
+        // Catches 'tree-sitter' AND 'tree-sitter (scip-empty-fallback)'.
+        entry.treeSitter += row.count;
+      }
+      // 'scip:external' / 'scope-resolved' / 'framework:*' / 'heuristic' — ignored.
+      perLang.set(row.language, entry);
+    }
+
+    const detected = await detectInstalledScipIndexers();
+    const coverage = buildScipCoverageMap(detected);
+
+    const out: LanguageTier[] = [];
+    for (const [lang, filesInRepo] of Object.entries(filesByLanguage)) {
+      if (filesInRepo <= 0) continue;
+      const language = lang as Language;
+      const counts = perLang.get(language) ?? { scip: 0, treeSitter: 0 };
+      const installedIndexer = coverage.get(language);
+
+      // Hint: only when no installed indexer covers this language AND a
+      // SCIP indexer spec exists for it.
+      let installHint: string | null = null;
+      if (!installedIndexer) {
+        const spec = SCIP_INDEXERS.find((s) => s.languages.includes(language));
+        if (spec) installHint = spec.installHint;
+      }
+
+      out.push({
+        language,
+        filesInRepo,
+        tier: counts.scip > 0 ? 'tier-1' : 'tier-0',
+        scipNodeCount: counts.scip,
+        treeSitterNodeCount: counts.treeSitter,
+        scipIndexerAvailable: installedIndexer !== undefined,
+        scipIndexerInstalled: installedIndexer?.cmd ?? null,
+        installHint,
+      });
+    }
+
+    out.sort((a, b) => b.filesInRepo - a.filesInRepo);
+    return out;
   }
 
   /**

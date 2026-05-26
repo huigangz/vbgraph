@@ -188,6 +188,25 @@ export interface Node {
    */
   scipIndexPath?: string;
 
+  /**
+   * True iff this row is visible-but-stale — i.e. SCIP data for the file
+   * has drifted since last refresh, and the file's language has no
+   * tree-sitter shadow grammar so the SCIP data is the best available.
+   * (Schema columns: `stale = 1 AND staleness_visible = 1`.)
+   *
+   * Hidden-stale rows (`stale = 1 AND staleness_visible = 0`) never reach
+   * the API surface; they are filtered out by the default query predicate.
+   * So `stale === true` always means "visible, but flagged as fallback".
+   *
+   * AI agents and other consumers can downweight or annotate these rows.
+   * Absent or `undefined` means fresh.
+   *
+   * Internal sync/diagnostic code reads the raw `stale`/`staleness_visible`
+   * columns directly via `*IncludingStale` query variants; only the
+   * public API distinguishes via this boolean.
+   */
+  stale?: boolean;
+
   /** When the node was last updated */
   updatedAt: number;
 }
@@ -235,6 +254,16 @@ export interface Edge {
    * framework `references` edges. Free-form; does not extend `EdgeKind`.
    */
   subkind?: string;
+
+  /**
+   * True iff this row is visible-but-stale. Same semantics as
+   * {@link Node.stale}. Edge staleness is source-only (see design doc
+   * Decision 2): an edge becomes stale when the file containing its
+   * source node drifts, not its target. Target-side visibility coherence
+   * is handled by the query layer's endpoint-visibility predicate, not
+   * by this flag.
+   */
+  stale?: boolean;
 }
 
 // =============================================================================
@@ -747,6 +776,40 @@ export interface CodeGraphConfig {
 
   /** SCIP indexer names to skip in `--scip-auto` mode. */
   disabledScipIndexers?: string[];
+
+  /**
+   * Branch-switch defense for stale-aware sync (P2.2 / design Decision 6):
+   * if more than this many SCIP-covered files have changed in a single sync,
+   * the per-file shadow extraction is skipped and all affected SCIP rows are
+   * bulk-marked `staleness_visible = 1` (visible-stale) instead. The user
+   * sees a CLI warning suggesting `codegraph scip-refresh`.
+   *
+   * Default: 50. Lower values trigger the bulk path more aggressively
+   * (faster sync but more "needs refresh" surface area); higher values
+   * accept longer per-file shadow extraction costs in exchange for keeping
+   * the per-file precision lifecycle. Set very high (e.g. 1_000_000) to
+   * disable the bulk path entirely.
+   */
+  maxStaleFilesPerSync?: number;
+
+  /**
+   * Shell command run by `codegraph scip-refresh` (P2.3) to regenerate the
+   * `.scip` index. Default: `'scip-dotnet index ./'`. Tokenized via
+   * whitespace; for paths with spaces, set as a JSON array in
+   * `.codegraph/config.json` (e.g. `["scip-dotnet", "index", "C:/Path With Spaces/"]`).
+   *
+   * The command is spawned with the project root as cwd; stdout/stderr are
+   * captured to `.codegraph/logs/scip-refresh-<timestamp>.log`.
+   */
+  scipRefreshCommand?: string | string[];
+
+  /**
+   * Output path passed to the refresh indexer AND read back by the ingest
+   * step. Default: `'./index.scip'` (the scip-dotnet convention). Resolved
+   * relative to the project root. P2.3 reads this from `.scip` output and
+   * passes it to `ingestScipFile`.
+   */
+  scipRefreshOutputPath?: string;
 }
 
 /**
@@ -955,6 +1018,9 @@ export const DEFAULT_CONFIG: CodeGraphConfig = {
   maxFileSize: 1024 * 1024, // 1MB
   extractDocstrings: true,
   trackCallSites: true,
+  maxStaleFilesPerSync: 50,    // P2.2.5 / design Decision 6
+  scipRefreshCommand: 'scip-dotnet index ./',  // P2.3.4 / design § P2.3
+  scipRefreshOutputPath: './index.scip',
 };
 
 // =============================================================================
@@ -1002,6 +1068,127 @@ export interface GraphStats {
 
   /** Last update timestamp */
   lastUpdated: number;
+}
+
+/**
+ * Options for `CodeGraph.refreshScip()` (P2.3).
+ *
+ * Both fields are optional and fall back to `CodeGraphConfig.scipRefreshCommand`
+ * / `scipRefreshOutputPath` respectively. The CLI passes them when the user
+ * supplies `--cmd` / `--scip-output` overrides.
+ */
+export interface ScipRefreshOptions {
+  /**
+   * Spawn command — same shape as the config field. Single string is
+   * whitespace-tokenized; array is taken as-is.
+   */
+  command?: string | string[];
+  /** Output `.scip` path (resolved relative to project root). */
+  scipOutputPath?: string;
+}
+
+/**
+ * Per-language summary returned by `CodeGraph.getLanguageTiers` — drives
+ * the per-language tier display in `codegraph status` (P2.4.4).
+ *
+ * Tier semantics:
+ *  - `'tier-1'`: at least one node with `provenance = 'scip'` exists in the
+ *    DB for this language. SCIP coverage is active.
+ *  - `'tier-0'`: no SCIP nodes for this language; tree-sitter is the only
+ *    source. May still have an installable indexer (see `scipIndexerAvailable`).
+ *
+ * Counts are O(nodes in language). Status calls this once per render.
+ */
+export interface LanguageTier {
+  language: Language;
+  filesInRepo: number;
+  tier: 'tier-0' | 'tier-1';
+  /** Nodes with `provenance = 'scip'` for this language. */
+  scipNodeCount: number;
+  /** Nodes with `provenance LIKE 'tree-sitter%'` for this language. */
+  treeSitterNodeCount: number;
+  /** True iff an installed SCIP indexer covers this language. */
+  scipIndexerAvailable: boolean;
+  /** Indexer CLI command (`'scip-dotnet'`, …), or null if none installed. */
+  scipIndexerInstalled: string | null;
+  /**
+   * Install hint command, populated when `scipIndexerAvailable=false`
+   * AND a SCIP indexer in `SCIP_INDEXERS` covers this language. Null
+   * when no upgrade path applies.
+   */
+  installHint: string | null;
+}
+
+/**
+ * Sidecar file written by `CodeGraph.refreshScip` and read by
+ * `CodeGraph.getLastScipRefresh` / `codegraph status`.
+ *
+ * Schema is informal — fields can be added (never removed) without
+ * versioning. The file is best-effort; a write failure during refresh does
+ * NOT affect the refresh result. Status treats missing OR corrupt as
+ * "never refreshed".
+ */
+export interface ScipLastRefresh {
+  /** ISO 8601 timestamp. */
+  refreshedAt: string;
+  /** Absolute path of the `.scip` ingested. */
+  scipPath: string;
+  /** The spawn command (re-stringified if originally an array). */
+  command: string;
+  /** Distinct source files covered by this refresh. */
+  filesCovered: number;
+  /** Total wall-clock time, ms. */
+  durationMs: number;
+  /**
+   * Recoverable derived-data errors from the most recent refresh
+   * (Phase 3 per-resolver failures, resolution throws). Same semicolon-
+   * joined string returned as `ScipRefreshResult.error`. Null on a
+   * clean refresh. Persisted across runs so scheduled `--quiet`
+   * refresh leaves a record schedulers without stderr capture can read.
+   */
+  lastError: string | null;
+}
+
+/**
+ * Result of `CodeGraph.refreshScip()`.
+ *
+ * `phase` maps to CLI exit codes:
+ *  - `'ok'`             → 0 (indexer + ingest + assertion all succeeded)
+ *  - `'spawn-failed'`   → 1 (indexer non-zero exit, crash, or missing output file)
+ *  - `'lock-failed'`    → 1 (another codegraph process holds the cross-process
+ *                            FileLock — refresh did not run; retry later)
+ *  - `'ingest-failed'`  → 2 (corrupt `.scip`, persister throw, or post-ingest
+ *                            shadow-leak assertion failure)
+ */
+export interface ScipRefreshResult {
+  phase: 'ok' | 'spawn-failed' | 'lock-failed' | 'ingest-failed';
+  error: string | null;
+  spawnExitCode: number | null;
+  scipPath: string | null;
+  filesCovered: number;
+  durationMs: number;
+  logPath: string | null;
+}
+
+/**
+ * Decomposed staleness counts returned by `getStaleSummary` — used by
+ * `codegraph status` to report SCIP drift transparently.
+ *
+ * Categories mirror the underlying raw-column states:
+ *  - hiddenStale: `stale = 1 AND staleness_visible = 0` — SCIP file edited,
+ *    tree-sitter shadow active for it. Not surfaced by default queries.
+ *  - visibleStale: `stale = 1 AND staleness_visible = 1` — SCIP file edited,
+ *    no shadow grammar available. Default queries return these with
+ *    `Node.stale` / `Edge.stale` set to `true`.
+ *  - fresh: `stale = 0`.
+ *
+ * `files` counts distinct file_paths that have at least one node row in the
+ * given category — useful for "N files awaiting refresh" headlines.
+ */
+export interface StaleSummary {
+  hiddenStale: { nodes: number; edges: number; files: number };
+  visibleStale: { nodes: number; edges: number; files: number };
+  fresh: { nodes: number; edges: number };
 }
 
 // =============================================================================

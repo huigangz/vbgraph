@@ -1,0 +1,81 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  CodeGraph SCIP-refresh launchd template (macOS).
+
+  WHAT IT DOES
+    Runs `codegraph scip-refresh` nightly at 03:00 local time, re-running
+    the configured SCIP indexer (default: scip-dotnet) and re-ingesting
+    its output. See the design doc § P2.3 for the lifecycle.
+
+  WHY YOU WANT IT
+    Editing a SCIP-covered file marks the SCIP rows hidden-stale (P2.2);
+    tree-sitter shadow fills in until refresh restores compiler-grade
+    precision. A nightly refresh keeps the stale window bounded.
+
+  HOW TO INSTALL
+    1. Copy this file to ~/Library/LaunchAgents/com.codegraph.scip-refresh.plist
+    2. Replace the THREE placeholders:
+       - REPLACE_WITH_NODE_BIN   →  $(which node)        e.g. /usr/local/bin/node
+       - REPLACE_WITH_CODEGRAPH  →  $(which codegraph)   e.g. /usr/local/bin/codegraph
+       - REPLACE_WITH_PROJECT    →  absolute path to your project root
+    3. Load it:
+         launchctl load -w ~/Library/LaunchAgents/com.codegraph.scip-refresh.plist
+    4. Verify next-run time:
+         launchctl list | grep com.codegraph
+
+  HOW TO UNINSTALL
+    launchctl unload -w ~/Library/LaunchAgents/com.codegraph.scip-refresh.plist
+    rm ~/Library/LaunchAgents/com.codegraph.scip-refresh.plist
+
+  EXIT CODES (per design § P2.3)
+    0 = ok, 1 = indexer failed, 2 = ingest failed (incl. post-ingest assertion)
+
+  LOGS
+    Per-run output: <PROJECT>/.codegraph/logs/scip-refresh-<timestamp>.log
+    Sidecar:        <PROJECT>/.codegraph/scip-last-refresh.json
+    launchd stdout/stderr: see <key>StandardOutPath</key> below.
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.codegraph.scip-refresh</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>REPLACE_WITH_NODE_BIN</string>
+        <string>REPLACE_WITH_CODEGRAPH</string>
+        <string>scip-refresh</string>
+        <string>--quiet</string>
+        <string>REPLACE_WITH_PROJECT</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>REPLACE_WITH_PROJECT</string>
+
+    <!-- Runs daily at 03:00 local time. Change Hour/Minute as desired. -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>3</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+
+    <!-- launchd captures stdout/stderr to these files. Per-run logs are
+         additionally written by codegraph to .codegraph/logs/ — see above. -->
+    <key>StandardOutPath</key>
+    <string>REPLACE_WITH_PROJECT/.codegraph/logs/scip-refresh-launchd.out</string>
+    <key>StandardErrorPath</key>
+    <string>REPLACE_WITH_PROJECT/.codegraph/logs/scip-refresh-launchd.err</string>
+
+    <!-- Don't keep the job alive after success — launchd should only run
+         it on schedule, not restart on exit. -->
+    <key>KeepAlive</key>
+    <false/>
+
+    <!-- launchd will start the job if the machine was asleep at 03:00. -->
+    <key>StartCalendarIntervalRunAtLoad</key>
+    <false/>
+</dict>
+</plist>

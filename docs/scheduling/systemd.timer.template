@@ -1,0 +1,38 @@
+# CodeGraph SCIP-refresh systemd timer template (Linux).
+#
+# Pair with codegraph-scip-refresh.service (see systemd.service.template).
+# Triggers the service nightly at 03:00 local time.
+#
+# Install + lifecycle: see header of systemd.service.template.
+#
+# CALENDAR EXPRESSION REFERENCE
+#   OnCalendar=*-*-* 03:00:00            Daily at 03:00
+#   OnCalendar=Mon..Fri *-*-* 03:00:00   Weekdays only
+#   OnCalendar=hourly                    Every hour on the hour
+#   OnCalendar=weekly                    Mondays at 00:00
+# Test an expression:
+#   systemd-analyze calendar '*-*-* 03:00:00'
+
+[Unit]
+Description=Trigger CodeGraph SCIP refresh nightly
+Documentation=https://github.com/colbymchenry/codegraph
+
+[Timer]
+# Daily at 03:00 local time. Change as desired.
+OnCalendar=*-*-* 03:00:00
+
+# Run on next boot if the machine was off at trigger time. Prevents a
+# laptop closed at 03:00 from skipping refresh entirely.
+Persistent=true
+
+# Random jitter ±10 minutes so multiple machines don't refresh
+# simultaneously (relevant on shared infra). Set to 0 if you want exact
+# 03:00 firing.
+RandomizedDelaySec=10min
+
+# Bind to the service unit name. Must match systemd.service.template's
+# filename (codegraph-scip-refresh.service).
+Unit=codegraph-scip-refresh.service
+
+[Install]
+WantedBy=timers.target

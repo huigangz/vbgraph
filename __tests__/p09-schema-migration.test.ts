@@ -72,7 +72,10 @@ describe('fresh database (schema.sql)', () => {
       expect(objectExists(db, 'index', 'idx_nodes_provenance')).toBe(true);
 
       expect(conn.getSchemaVersion()?.version).toBe(CURRENT_SCHEMA_VERSION);
-      expect(CURRENT_SCHEMA_VERSION).toBe(6);
+      expect(CURRENT_SCHEMA_VERSION).toBe(7);
+      // v7 partial indexes ship in fresh schema.sql
+      expect(objectExists(db, 'index', 'idx_nodes_stale')).toBe(true);
+      expect(objectExists(db, 'index', 'idx_edges_stale')).toBe(true);
     } finally {
       conn.close();
     }

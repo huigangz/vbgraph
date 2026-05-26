@@ -187,6 +187,28 @@ function formatDuration(ms: number): string {
   return `${minutes}m ${remainingSeconds.toFixed(0)}s`;
 }
 
+/**
+ * Format an ISO timestamp as a relative duration ("2 hours ago",
+ * "3 days ago"). Used by status to render the last-refresh time.
+ */
+function formatRelativeTime(iso: string): string {
+  const then = Date.parse(iso);
+  if (Number.isNaN(then)) return iso;
+  const diff = Date.now() - then;
+  if (diff < 0) return 'in the future';
+  const sec = Math.floor(diff / 1000);
+  if (sec < 60) return `${sec}s ago`;
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min}m ago`;
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return `${hr}h ago`;
+  const day = Math.floor(hr / 24);
+  if (day < 30) return `${day}d ago`;
+  const mo = Math.floor(day / 30);
+  if (mo < 12) return `${mo}mo ago`;
+  return `${Math.floor(mo / 12)}y ago`;
+}
+
 // Shimmer progress renderer (runs in a worker thread for smooth animation)
 // Imported at top of file from '../ui/shimmer-progress'
 
@@ -709,6 +731,102 @@ program
   });
 
 /**
+ * codegraph scip-refresh [path]
+ *
+ * P2.3 — spawn the configured SCIP indexer and re-ingest its output.
+ * Reuses P0 STAGE B (scoped delete + re-insert) via `CodeGraph.refreshScip`.
+ * After ingest, runs the narrow post-ingest assertion: each refreshed
+ * file must have zero `provenance = 'tree-sitter'` rows (fallback rows
+ * legitimately re-created by STAGE E are excluded).
+ *
+ * Exit codes: 0 success, 1 indexer failed, 2 ingest failed.
+ */
+program
+  .command('scip-refresh [path]')
+  .description('Re-run the configured SCIP indexer and ingest its output')
+  .option('--cmd <command>', 'Override `config.scipRefreshCommand`')
+  .option('--scip-output <path>', 'Override `config.scipRefreshOutputPath`')
+  .option('-q, --quiet', 'Suppress non-error output')
+  .action(async (
+    pathArg: string | undefined,
+    options: { cmd?: string; scipOutput?: string; quiet?: boolean },
+  ) => {
+    const projectPath = resolveProjectPath(pathArg);
+    try {
+      if (!isInitialized(projectPath)) {
+        error(`CodeGraph not initialized in ${projectPath}`);
+        info('Run "codegraph init" first');
+        process.exit(1);
+      }
+
+      const { default: CodeGraph } = await loadCodeGraph();
+      const cg = await CodeGraph.open(projectPath);
+      try {
+        if (!options.quiet) {
+          info('Refreshing SCIP index…');
+        }
+        const result = await cg.refreshScip({
+          command: options.cmd,
+          scipOutputPath: options.scipOutput,
+        });
+
+        if (result.phase === 'ok') {
+          // Round-3 review fix: even on phase 'ok', recoverable
+          // derived-data errors (Phase 3's per-resolver diagnostics from
+          // phase3Result.errors) MUST reach the user — otherwise
+          // scheduled --quiet refresh silently drops framework
+          // contributions. The previous version wrote via `warn()` which
+          // emits to stdout, but Task Scheduler / launchd / systemd
+          // capture only stderr (and exit code, which intentionally
+          // stays 0 here). Write the warning DIRECTLY to stderr so all
+          // three schedulers persist it.
+          //
+          // Backup channels (defense-in-depth):
+          //   (a) refreshScip also appends `result.error` to its per-run
+          //       log file (.codegraph/logs/scip-refresh-<ts>.log).
+          //   (b) The sidecar (.codegraph/scip-last-refresh.json) now
+          //       carries `lastError` so users can `cat` it.
+          if (result.error) {
+            const warnLine = `${getGlyphs().warn} scip-refresh completed with derived-data issues: ${result.error}`;
+            process.stderr.write(chalk.yellow(warnLine) + '\n');
+            if (result.logPath) {
+              process.stderr.write(chalk.blue(getGlyphs().info) + ` Log: ${result.logPath}\n`);
+            }
+          }
+          if (!options.quiet) {
+            success(
+              `Refreshed ${formatNumber(result.filesCovered)} file(s) in ${formatDuration(result.durationMs)}`,
+            );
+            if (result.logPath && !result.error) {
+              info(`Log: ${result.logPath}`);
+            }
+          }
+          return; // exit 0
+        }
+
+        // Map failure phase to exit code per the design's exit-code contract.
+        // 'spawn-failed' + 'lock-failed' → 1 (refresh did not produce ingest);
+        // 'ingest-failed' → 2 (refresh produced output but ingest/assertion failed).
+        const exitCode =
+          result.phase === 'spawn-failed' || result.phase === 'lock-failed' ? 1 : 2;
+        error(`scip-refresh ${result.phase}: ${result.error ?? 'unknown'}`);
+        if (result.logPath) {
+          info(`Log: ${result.logPath}`);
+        }
+        if (result.spawnExitCode !== null) {
+          info(`Indexer exit code: ${result.spawnExitCode}`);
+        }
+        process.exit(exitCode);
+      } finally {
+        cg.destroy();
+      }
+    } catch (err) {
+      error(`scip-refresh failed: ${err instanceof Error ? err.message : String(err)}`);
+      process.exit(2);
+    }
+  });
+
+/**
  * codegraph status [path]
  */
 program
@@ -734,10 +852,20 @@ program
       const { default: CodeGraph } = await loadCodeGraph();
       const cg = await CodeGraph.open(projectPath);
       const stats = cg.getStats();
+      const rawStats = cg.getStatsIncludingStale();          // P2.4.1
+      const stale = cg.getStaleSummary();                    // P2.4.1
+      const lastRefresh = cg.getLastScipRefresh();           // P2.4.2
+      const languageTiers = await cg.getLanguageTiers();     // P2.4.3
+      const danglingEdges = cg.countDanglingEdgesAgainstHiddenStale();  // review fix #4
       const changes = cg.getChangedFiles();
       const backend = cg.getBackend();
 
       const frameworks = cg.getFrameworkEdgeContributionCounts();
+
+      // Derived hint flag — non-zero stale of either flavor triggers the
+      // "run scip-refresh" suggestion. Dangling edges also indicate
+      // stale endpoints — same hint applies.
+      const needsRefresh = stale.hiddenStale.files + stale.visibleStale.files > 0;
 
       // JSON output mode
       if (options.json) {
@@ -752,6 +880,16 @@ program
           nodesByKind: stats.nodesByKind,
           languages: Object.entries(stats.filesByLanguage).filter(([, count]) => count > 0).map(([lang]) => lang),
           frameworks,
+          // P2.4.5 — additions for the staleness model.
+          stale,
+          danglingEdges,
+          rawTotals: {
+            nodeCount: rawStats.nodeCount,
+            edgeCount: rawStats.edgeCount,
+          },
+          lastScipRefresh: lastRefresh,
+          languageTiers,
+          needsRefresh,
           pendingChanges: {
             added: changes.added.length,
             modified: changes.modified.length,
@@ -782,6 +920,79 @@ program
         ? chalk.green('native')
         : chalk.yellow(`wasm ${getGlyphs().dash} slower fallback; run \`npm rebuild better-sqlite3\``);
       console.log(`  Backend:   ${backendLabel}`);
+      console.log();
+
+      // Staleness (P2.4.4 + review fix #4) — shown when ANY of: stale rows
+      // exist, OR public edge queries are filtering dangling references
+      // (Decision 7). Otherwise a single "fresh" success line keeps the
+      // report quiet on a clean DB.
+      const totalStaleFiles = stale.hiddenStale.files + stale.visibleStale.files;
+      if (totalStaleFiles > 0 || danglingEdges > 0) {
+        console.log(chalk.bold('Staleness:'));
+        if (stale.hiddenStale.files > 0) {
+          console.log(
+            `  Shadow active:       ${chalk.cyan(formatNumber(stale.hiddenStale.files))} file(s) ${getGlyphs().dash} ` +
+              `${formatNumber(stale.hiddenStale.nodes)} nodes hidden behind tree-sitter shadow`,
+          );
+        }
+        if (stale.visibleStale.files > 0) {
+          console.log(
+            `  Needs refresh:       ${chalk.yellow(formatNumber(stale.visibleStale.files))} file(s) ${getGlyphs().dash} ` +
+              `${formatNumber(stale.visibleStale.nodes)} nodes shown stale (no tree-sitter grammar)`,
+          );
+        }
+        if (danglingEdges > 0) {
+          // Edges hidden ONLY because an endpoint is hidden-stale (Decision 7).
+          // Distinct from edge-row staleness; surfaces the visibility-filter
+          // contribution so users understand WHY a graph view looks sparser.
+          console.log(
+            `  Dangling against stale: ${chalk.cyan(formatNumber(danglingEdges))} edge(s) hidden by endpoint visibility`,
+          );
+        }
+        // Raw totals only meaningful when there's a delta vs filtered.
+        if (rawStats.nodeCount !== stats.nodeCount || rawStats.edgeCount !== stats.edgeCount) {
+          console.log(
+            `  Raw totals:          ${formatNumber(rawStats.nodeCount)} nodes / ${formatNumber(rawStats.edgeCount)} edges ` +
+              chalk.gray(`(filtered: ${formatNumber(stats.nodeCount)}/${formatNumber(stats.edgeCount)})`),
+          );
+        }
+        console.log();
+      }
+
+      // SCIP last-refresh + per-language tier (P2.4.4)
+      console.log(chalk.bold('SCIP:'));
+      if (lastRefresh) {
+        console.log(
+          `  Last refresh:  ${formatRelativeTime(lastRefresh.refreshedAt)} ${getGlyphs().dash} ` +
+            `${formatNumber(lastRefresh.filesCovered)} file(s) in ${formatDuration(lastRefresh.durationMs)}`,
+        );
+        // Round-3 review fix: surface persisted derived-data warning from
+        // the most recent refresh. Helps users running scheduled --quiet
+        // refresh discover Phase 3 failures that didn't make it past
+        // their scheduler's stderr/stdout capture.
+        if (lastRefresh.lastError) {
+          console.log(
+            `  ${chalk.yellow(getGlyphs().warn)} Last refresh had derived-data issues: ${lastRefresh.lastError}`,
+          );
+        }
+      } else {
+        console.log(`  Last refresh:  ${chalk.gray('never')}`);
+      }
+      if (languageTiers.length > 0) {
+        for (const lt of languageTiers) {
+          const tierLabel = lt.tier === 'tier-1'
+            ? chalk.green(`Tier 1 SCIP${lt.scipIndexerInstalled ? ` (${lt.scipIndexerInstalled})` : ''}`)
+            : chalk.gray('Tier 0 tree-sitter');
+          let line = `  ${lt.language.padEnd(12)} ${tierLabel}`;
+          if (lt.tier === 'tier-0' && lt.installHint) {
+            line += chalk.yellow(` ${getGlyphs().dash} upgrade: ${lt.installHint}`);
+          }
+          console.log(line);
+        }
+      }
+      if (needsRefresh) {
+        info('Run "codegraph scip-refresh" to restore SCIP precision');
+      }
       console.log();
 
       // Node breakdown

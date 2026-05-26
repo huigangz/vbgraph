@@ -135,6 +135,55 @@ describe('FileLock', () => {
     // Second release should not throw
     expect(() => lock.release()).not.toThrow();
   });
+
+  // Regression: a long-running refresh (multi-minute on large solutions)
+  // would previously be deleted by a second caller after the legacy
+  // 2-minute mtime threshold, even though the holding PID was still alive.
+  // Live PID must remain authoritative regardless of lock-file age.
+  it('keeps a lock with a live PID even when the file is older than the legacy 2-minute timeout', () => {
+    // Hold the lock with our own PID (guaranteed alive).
+    fs.writeFileSync(lockPath, String(process.pid));
+
+    // Backdate the lock-file mtime by 10 minutes — well past the old
+    // STALE_TIMEOUT_MS = 2 minutes. The old code path deleted at this
+    // age regardless of PID liveness; the new code must NOT.
+    const tenMinutesAgo = (Date.now() - 10 * 60 * 1000) / 1000;
+    fs.utimesSync(lockPath, tenMinutesAgo, tenMinutesAgo);
+
+    const lock = new FileLock(lockPath);
+    expect(() => lock.acquire()).toThrow(/locked by another process/);
+
+    // Lock file must still be there — not deleted by the failed acquire.
+    expect(fs.existsSync(lockPath)).toBe(true);
+    // And it still contains our PID (not overwritten).
+    expect(fs.readFileSync(lockPath, 'utf-8').trim()).toBe(String(process.pid));
+  });
+
+  it('reclaims a lock with a malformed (unparseable) PID once the legacy age window has elapsed', () => {
+    // Lock file with garbage payload — no parseable PID, so liveness can't
+    // be checked. Backstop is the legacy mtime threshold.
+    fs.writeFileSync(lockPath, 'not-a-pid');
+    const tenMinutesAgo = (Date.now() - 10 * 60 * 1000) / 1000;
+    fs.utimesSync(lockPath, tenMinutesAgo, tenMinutesAgo);
+
+    const lock = new FileLock(lockPath);
+    expect(() => lock.acquire()).not.toThrow();
+
+    // Lock file should now hold OUR PID.
+    expect(fs.readFileSync(lockPath, 'utf-8').trim()).toBe(String(process.pid));
+    lock.release();
+  });
+
+  it('rejects a recent malformed-PID lock instead of deleting it', () => {
+    // Garbage PID, recent mtime (default — file was just written).
+    fs.writeFileSync(lockPath, 'not-a-pid');
+
+    const lock = new FileLock(lockPath);
+    expect(() => lock.acquire()).toThrow(/malformed/);
+    // Original (malformed) file is preserved — caller decides what to do.
+    expect(fs.existsSync(lockPath)).toBe(true);
+    expect(fs.readFileSync(lockPath, 'utf-8').trim()).toBe('not-a-pid');
+  });
 });
 
 describe('Path Traversal Prevention', () => {

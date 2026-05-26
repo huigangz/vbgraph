@@ -937,13 +937,26 @@ function maybeEmptyFallback(
   stats.emptyFallbackCount++;
 }
 
-/** Delete prior `provenance='tree-sitter'` rows for a file now SCIP-covered. */
+/**
+ * Delete prior tree-sitter rows for a file now SCIP-covered.
+ *
+ * P2.3.1: predicate widened from exact `provenance = 'tree-sitter'` to
+ * `provenance LIKE 'tree-sitter%'` so the same per-doc sweep also clears
+ * any previously-created `'tree-sitter (scip-empty-fallback)'` rows from
+ * an earlier ingest generation. STAGE E re-creates fresh fallback rows
+ * AFTER this function runs (at line 914 via `maybeEmptyFallback`), so
+ * empty SCIP documents still get their fallback — just freshly minted.
+ *
+ * The broader predicate is also what P2.2's `deleteFileTreeSitterRows`
+ * uses for sync-side shadow cleanup; the two paths now have consistent
+ * semantics for "what counts as a tree-sitter row for this file".
+ */
 function supersedeTreeSitter(db: SqliteDatabase, relativePath: string): void {
-  const treeSitterIds = `SELECT id FROM nodes WHERE file_path = @p AND provenance = 'tree-sitter'`;
+  const treeSitterIds = `SELECT id FROM nodes WHERE file_path = @p AND provenance LIKE 'tree-sitter%'`;
   db.prepare(
     `DELETE FROM edges WHERE source IN (${treeSitterIds}) OR target IN (${treeSitterIds})`,
   ).run({ p: relativePath });
   db.prepare(
-    `DELETE FROM nodes WHERE file_path = @p AND provenance = 'tree-sitter'`,
+    `DELETE FROM nodes WHERE file_path = @p AND provenance LIKE 'tree-sitter%'`,
   ).run({ p: relativePath });
 }
