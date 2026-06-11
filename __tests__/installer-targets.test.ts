@@ -29,16 +29,46 @@ function mkTmpDir(label: string): string {
 // `$HOME` (POSIX) / `$USERPROFILE` (Windows) env vars that
 // `os.homedir()` reads first. Same trick the rest of the suite uses
 // when it needs a mock home.
+//
+// ALSO redirected: `APPDATA` (opencode's global dir on Windows) and
+// `XDG_CONFIG_HOME` (opencode's global dir on POSIX when set). Without
+// these, opencode's global installs escape the sandbox and read/WRITE
+// the developer's real `%APPDATA%\opencode` / `$XDG_CONFIG_HOME/opencode`
+// config — the sibling-preservation test seeds (overwrites!) the config
+// file it resolves, so the leak is destructive, not just flaky.
 function setHome(dir: string): { restore: () => void } {
-  const prev = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE };
+  const prev = {
+    HOME: process.env.HOME,
+    USERPROFILE: process.env.USERPROFILE,
+    APPDATA: process.env.APPDATA,
+    XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME,
+  };
   process.env.HOME = dir;
   process.env.USERPROFILE = dir;
+  process.env.APPDATA = path.join(dir, 'AppData', 'Roaming');
+  process.env.XDG_CONFIG_HOME = path.join(dir, '.config');
   return {
     restore() {
-      if (prev.HOME === undefined) delete process.env.HOME; else process.env.HOME = prev.HOME;
-      if (prev.USERPROFILE === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = prev.USERPROFILE;
+      for (const key of Object.keys(prev) as Array<keyof typeof prev>) {
+        if (prev[key] === undefined) delete process.env[key]; else process.env[key] = prev[key];
+      }
     },
   };
+}
+
+// Mirrors opencode's platform-dependent global config dir resolution
+// (src/installer/targets/opencode.ts globalConfigDir) under the mocked
+// home: `%APPDATA%\opencode` on Windows, `$XDG_CONFIG_HOME/opencode`
+// (= <home>/.config/opencode under setHome) elsewhere.
+function opencodeGlobalDir(home: string): string {
+  return process.platform === 'win32'
+    ? path.join(home, 'AppData', 'Roaming', 'opencode')
+    : path.join(home, '.config', 'opencode');
+}
+
+// Windows paths use backslashes; suffix assertions normalize first.
+function toPosix(p: string): string {
+  return p.replace(/\\/g, '/');
 }
 
 describe('Installer targets — contract', () => {
@@ -187,7 +217,7 @@ describe('Installer targets — partial-state idempotency', () => {
 
   it('opencode: prefers .jsonc when both .json and .jsonc exist', () => {
     const opencode = getTarget('opencode')!;
-    const dir = path.join(tmpHome, '.config', 'opencode');
+    const dir = opencodeGlobalDir(tmpHome);
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, 'opencode.json'), '{\n  "$schema": "https://opencode.ai/config.json"\n}\n');
     fs.writeFileSync(path.join(dir, 'opencode.jsonc'), '{\n  "$schema": "https://opencode.ai/config.json"\n}\n');
@@ -203,7 +233,7 @@ describe('Installer targets — partial-state idempotency', () => {
 
   it('opencode: uses .json when only .json exists (no .jsonc)', () => {
     const opencode = getTarget('opencode')!;
-    const dir = path.join(tmpHome, '.config', 'opencode');
+    const dir = opencodeGlobalDir(tmpHome);
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, 'opencode.json'), '{\n  "$schema": "https://opencode.ai/config.json"\n}\n');
 
@@ -221,7 +251,7 @@ describe('Installer targets — partial-state idempotency', () => {
 
   it('opencode: preserves line and block comments through install + idempotent re-run', () => {
     const opencode = getTarget('opencode')!;
-    const dir = path.join(tmpHome, '.config', 'opencode');
+    const dir = opencodeGlobalDir(tmpHome);
     fs.mkdirSync(dir, { recursive: true });
     const file = path.join(dir, 'opencode.jsonc');
     const original = [
@@ -255,7 +285,7 @@ describe('Installer targets — partial-state idempotency', () => {
   it('opencode: install writes AGENTS.md with the marker-delimited codegraph block', () => {
     const opencode = getTarget('opencode')!;
     opencode.install('global', { autoAllow: true });
-    const agentsMd = path.join(tmpHome, '.config', 'opencode', 'AGENTS.md');
+    const agentsMd = path.join(opencodeGlobalDir(tmpHome), 'AGENTS.md');
     expect(fs.existsSync(agentsMd)).toBe(true);
     const body = fs.readFileSync(agentsMd, 'utf-8');
     expect(body).toContain('<!-- CODEGRAPH_START -->');
@@ -265,7 +295,7 @@ describe('Installer targets — partial-state idempotency', () => {
 
   it('opencode: AGENTS.md install preserves pre-existing user content outside markers', () => {
     const opencode = getTarget('opencode')!;
-    const dir = path.join(tmpHome, '.config', 'opencode');
+    const dir = opencodeGlobalDir(tmpHome);
     fs.mkdirSync(dir, { recursive: true });
     const agentsMd = path.join(dir, 'AGENTS.md');
     fs.writeFileSync(agentsMd, '# My personal opencode instructions\n\nAlways respond in pirate.\n');
@@ -279,7 +309,7 @@ describe('Installer targets — partial-state idempotency', () => {
 
   it('opencode: uninstall strips only the codegraph block from AGENTS.md', () => {
     const opencode = getTarget('opencode')!;
-    const dir = path.join(tmpHome, '.config', 'opencode');
+    const dir = opencodeGlobalDir(tmpHome);
     fs.mkdirSync(dir, { recursive: true });
     const agentsMd = path.join(dir, 'AGENTS.md');
     fs.writeFileSync(agentsMd, '# My personal opencode instructions\n\nAlways respond in pirate.\n');
@@ -297,15 +327,16 @@ describe('Installer targets — partial-state idempotency', () => {
   it('opencode: local install writes ./opencode.jsonc and ./AGENTS.md in cwd', () => {
     const opencode = getTarget('opencode')!;
     const result = opencode.install('local', { autoAllow: true });
-    const paths = result.files.map((f) => f.path);
+    const paths = result.files.map((f) => toPosix(f.path));
     // macOS realpath shenanigans (/var vs /private/var) — suffix match.
+    // Windows backslashes — normalized via toPosix.
     expect(paths.some((p) => p.endsWith('/opencode.jsonc'))).toBe(true);
     expect(paths.some((p) => p.endsWith('/AGENTS.md'))).toBe(true);
   });
 
   it('opencode: uninstall removes only mcp.codegraph, preserves comments and siblings', () => {
     const opencode = getTarget('opencode')!;
-    const dir = path.join(tmpHome, '.config', 'opencode');
+    const dir = opencodeGlobalDir(tmpHome);
     fs.mkdirSync(dir, { recursive: true });
     const file = path.join(dir, 'opencode.jsonc');
     fs.writeFileSync(file, [
