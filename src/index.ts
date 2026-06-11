@@ -29,7 +29,10 @@ import {
   ScipLastRefresh,
   LanguageTier,
   StaleSummary,
+  ConfidenceTier,
+  GraphProvenance,
 } from './types';
+import { deriveConfidenceTier } from './types';
 import { DatabaseConnection, getDatabasePath } from './db';
 import { QueryBuilder } from './db/queries';
 import { loadConfig, saveConfig, createDefaultConfig } from './config';
@@ -1493,6 +1496,30 @@ export class CodeGraph {
    */
   getStaleSummary(): StaleSummary {
     return this.queries.getStaleSummary();
+  }
+
+  /**
+   * Edge counts grouped by derived confidence tier (P0.4d) — `compiler`
+   * (SCIP), `scope-resolved`, `syntactic` (tree-sitter), `inferred`
+   * (heuristic / framework), `ambiguous` (no provenance). Counts follow the
+   * default freshness + endpoint-visibility contract, so they sum to
+   * `getStats().edgeCount`. Used by `codegraph status`.
+   */
+  getEdgeConfidenceTierCounts(): Record<ConfidenceTier, number> {
+    const counts: Record<ConfidenceTier, number> = {
+      compiler: 0,
+      syntactic: 0,
+      'scope-resolved': 0,
+      inferred: 0,
+      ambiguous: 0,
+    };
+    for (const row of this.queries.getEdgeCountsByProvenance()) {
+      const tier = deriveConfidenceTier(
+        (row.provenance ?? undefined) as GraphProvenance | undefined,
+      );
+      counts[tier] += row.count;
+    }
+    return counts;
   }
 
   /**

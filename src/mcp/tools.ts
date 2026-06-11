@@ -6,6 +6,7 @@
 
 import CodeGraph, { findNearestCodeGraphRoot } from '../index';
 import type { Node, Edge, SearchResult, Subgraph, TaskContext, NodeKind } from '../types';
+import { deriveConfidenceTier } from '../types';
 import { createHash } from 'crypto';
 import { writeFileSync, readFileSync, existsSync } from 'fs';
 import { clamp, validatePathWithinRoot } from '../utils';
@@ -702,12 +703,12 @@ export class ToolHandler {
 
     // Aggregate callers across all matching symbols
     const seen = new Set<string>();
-    const allCallers: Node[] = [];
+    const allCallers: Array<{ node: Node; edge: Edge }> = [];
     for (const node of allMatches.nodes) {
       for (const c of cg.getCallers(node.id)) {
         if (!seen.has(c.node.id)) {
           seen.add(c.node.id);
-          allCallers.push(c.node);
+          allCallers.push(c);
         }
       }
     }
@@ -716,7 +717,7 @@ export class ToolHandler {
       return this.textResult(`No callers found for "${symbol}"${allMatches.note}`);
     }
 
-    const formatted = this.formatNodeList(allCallers.slice(0, limit), `Callers of ${symbol}`) + allMatches.note;
+    const formatted = this.formatCallList(allCallers.slice(0, limit), `Callers of ${symbol}`) + allMatches.note;
     return this.textResult(this.truncateOutput(formatted));
   }
 
@@ -737,12 +738,12 @@ export class ToolHandler {
 
     // Aggregate callees across all matching symbols
     const seen = new Set<string>();
-    const allCallees: Node[] = [];
+    const allCallees: Array<{ node: Node; edge: Edge }> = [];
     for (const node of allMatches.nodes) {
       for (const c of cg.getCallees(node.id)) {
         if (!seen.has(c.node.id)) {
           seen.add(c.node.id);
-          allCallees.push(c.node);
+          allCallees.push(c);
         }
       }
     }
@@ -751,7 +752,7 @@ export class ToolHandler {
       return this.textResult(`No callees found for "${symbol}"${allMatches.note}`);
     }
 
-    const formatted = this.formatNodeList(allCallees.slice(0, limit), `Callees of ${symbol}`) + allMatches.note;
+    const formatted = this.formatCallList(allCallees.slice(0, limit), `Callees of ${symbol}`) + allMatches.note;
     return this.textResult(this.truncateOutput(formatted));
   }
 
@@ -1669,13 +1670,19 @@ export class ToolHandler {
     return lines.join('\n');
   }
 
-  private formatNodeList(nodes: Node[], title: string): string {
-    const lines: string[] = [`## ${title} (${nodes.length} found)`, ''];
+  /**
+   * Caller/callee list where each line is annotated with the confidence
+   * tier of the connecting edge (P0.4d) —
+   * `[compiler]` (SCIP) > `[scope-resolved]` > `[syntactic]` (tree-sitter) >
+   * `[inferred]` (heuristic / framework convention).
+   */
+  private formatCallList(entries: Array<{ node: Node; edge: Edge }>, title: string): string {
+    const lines: string[] = [`## ${title} (${entries.length} found)`, ''];
 
-    for (const node of nodes) {
+    for (const { node, edge } of entries) {
       const location = node.startLine ? `:${node.startLine}` : '';
-      // Compact: just name, kind, location
-      lines.push(`- ${node.name} (${node.kind}) - ${node.filePath}${location}`);
+      const tier = deriveConfidenceTier(edge.provenance);
+      lines.push(`- ${node.name} (${node.kind}) - ${node.filePath}${location} [${tier}]`);
     }
 
     return lines.join('\n');

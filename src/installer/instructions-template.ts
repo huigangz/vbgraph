@@ -33,8 +33,8 @@ Use codegraph for **structural** questions — what calls what, what would break
 |---|---|
 | "How does X work? / trace X / explain a system / architecture" | \`codegraph_explore\` (seed with symbol names) |
 | "Where is X defined?" / "Find symbol named X" | \`codegraph_search\` (pass \`tag\` to narrow by framework role — e.g. \`tag: 'spring:service'\`, \`tag: 'react:hook'\`, \`tag: 'route-handler'\`) |
-| "What calls function Y?" | \`codegraph_callers\` |
-| "What does Y call?" | \`codegraph_callees\` |
+| "What calls function Y?" | \`codegraph_callers\` (entries end with a confidence tier — \`[compiler]\` > \`[scope-resolved]\` > \`[syntactic]\` > \`[inferred]\`) |
+| "What does Y call?" | \`codegraph_callees\` (same tier annotation) |
 | "What would break if I changed Z?" | \`codegraph_impact\` |
 | "Show me Y's signature / source / docstring" | \`codegraph_node\` |
 | "Give me focused context for a task/area" | \`codegraph_context\` |

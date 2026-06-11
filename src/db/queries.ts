@@ -1621,6 +1621,29 @@ export class QueryBuilder {
   }
 
   /**
+   * Edge counts grouped by primary `provenance`, under the default
+   * freshness + endpoint-visibility contract (so the counts sum to
+   * `getStats().edgeCount`). Used by `codegraph status` to derive the
+   * per-confidence-tier breakdown (P0.4d) — the provenance→tier mapping
+   * (`deriveConfidenceTier`) is applied by the CodeGraph facade, not here.
+   *
+   * A NULL primary provenance (legacy rows predating schema v5) is
+   * returned as `null`; the facade maps it to the `ambiguous` tier.
+   */
+  getEdgeCountsByProvenance(): Array<{ provenance: string | null; count: number }> {
+    return this.db
+      .prepare(
+        `SELECT provenance, COUNT(*) AS count
+           FROM edges
+          WHERE ${freshPredicate()}
+            AND source ${visibleNodeIdPredicate()}
+            AND target ${visibleNodeIdPredicate()}
+          GROUP BY provenance`,
+      )
+      .all() as Array<{ provenance: string | null; count: number }>;
+  }
+
+  /**
    * Flush QueryBuilder-level caches that could hold framework-derived rows.
    * Called by Phase3Orchestrator after STAGE 0 purge and after STAGE B writes
    * so that subsequent reads (and view construction) observe the fresh state.

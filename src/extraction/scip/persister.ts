@@ -393,7 +393,7 @@ const SCOPE_NODE_KINDS: ReadonlySet<NodeKind> = new Set<NodeKind>([
 function descriptorPathKey(parsed: ParsedScipSymbol, depth: number): string {
   const path = parsed.descriptors
     .slice(0, depth)
-    .map((d) => `${d.suffix} ${d.name} ${d.disambiguator ?? ''}`);
+    .map((d) => `${d.suffix}\x00${d.name}\x00${d.disambiguator ?? ''}`);
   return JSON.stringify([
     parsed.scheme,
     parsed.package.manager,

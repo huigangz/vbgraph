@@ -29,6 +29,7 @@ editing code, not during.
 - **"What's the deal with this task / feature / area?"** → \`codegraph_context\` (lighter composed view of search + node + callers + callees)
 - **"What calls this?"** → \`codegraph_callers\`
 - **"What does this call?"** → \`codegraph_callees\`
+  - Caller/callee entries end with a confidence tier: \`[compiler]\` (SCIP, exact) > \`[scope-resolved]\` > \`[syntactic]\` (tree-sitter) > \`[inferred]\` (heuristic / framework convention). Trust all tiers for navigation; treat \`[inferred]\` with mild caution when correctness matters.
 - **"What would changing this break?"** → \`codegraph_impact\`
 - **"Show me this symbol's source / signature / docstring."** → \`codegraph_node\`
 - **"What's in directory X?"** → \`codegraph_files\`

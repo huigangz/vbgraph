@@ -2504,9 +2504,9 @@ export class TreeSitterExtractor {
 /**
  * Extract nodes and edges from source code.
  *
- * If `frameworkNames` is provided, framework-specific extractors matching
- * those names and the file's language are run after the tree-sitter pass.
- * Their nodes/references/errors are merged into the returned result.
+ * Framework-specific extraction no longer happens here — framework resolvers
+ * run as a project-level Phase 3 pass (synthesize/augment) after extraction
+ * and resolution complete. See src/resolution/phase3.ts.
  */
 export function extractFromSource(
   filePath: string,

@@ -861,6 +861,7 @@ program
       const backend = cg.getBackend();
 
       const frameworks = cg.getFrameworkEdgeContributionCounts();
+      const edgeTiers = cg.getEdgeConfidenceTierCounts();     // P0.4d
 
       // Derived hint flag — non-zero stale of either flavor triggers the
       // "run scip-refresh" suggestion. Dangling edges also indicate
@@ -880,6 +881,7 @@ program
           nodesByKind: stats.nodesByKind,
           languages: Object.entries(stats.filesByLanguage).filter(([, count]) => count > 0).map(([lang]) => lang),
           frameworks,
+          edgesByConfidenceTier: edgeTiers,                   // P0.4d
           // P2.4.5 — additions for the staleness model.
           stale,
           danglingEdges,
@@ -920,6 +922,15 @@ program
         ? chalk.green('native')
         : chalk.yellow(`wasm ${getGlyphs().dash} slower fallback; run \`npm rebuild better-sqlite3\``);
       console.log(`  Backend:   ${backendLabel}`);
+      // P0.4d — per-confidence-tier edge breakdown. Only tiers with edges
+      // are shown; on a pure tree-sitter index this is one "syntactic" entry.
+      const tierLine = (Object.entries(edgeTiers) as Array<[string, number]>)
+        .filter(([, count]) => count > 0)
+        .map(([tier, count]) => `${tier}: ${formatNumber(count)}`)
+        .join('; ');
+      if (tierLine) {
+        console.log(`  Edge confidence: ${tierLine}`);
+      }
       console.log();
 
       // Staleness (P2.4.4 + review fix #4) — shown when ANY of: stale rows
