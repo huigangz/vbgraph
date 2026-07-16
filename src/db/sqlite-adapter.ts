@@ -121,7 +121,7 @@ function resolveParams(params: any[], paramOrder: string[] | null): any {
  * - node-sqlite3-wasm doesn't have a `pragma()` method
  * - node-sqlite3-wasm doesn't have a `transaction()` method
  */
-class WasmDatabaseAdapter implements SqliteDatabase {
+export class WasmDatabaseAdapter implements SqliteDatabase {
   private _db: any;
   // Track raw WASM statements so we can finalize them on close.
   // node-sqlite3-wasm won't release its file lock if statements are left open.
@@ -152,7 +152,12 @@ class WasmDatabaseAdapter implements SqliteDatabase {
       },
       get(...params: any[]) {
         const resolved = resolveParams(params, paramOrder);
-        return resolved !== undefined ? stmt.get(resolved) : stmt.get();
+        try {
+          return resolved !== undefined ? stmt.get(resolved) : stmt.get();
+        } finally {
+          // Wasm get() does not auto-reset like better-sqlite3; suspended cursors block VACUUM.
+          (stmt as any)._reset?.();
+        }
       },
       all(...params: any[]) {
         const resolved = resolveParams(params, paramOrder);
@@ -217,6 +222,8 @@ class WasmDatabaseAdapter implements SqliteDatabase {
   }
 
   close(): void {
+    if (!this._db.isOpen) return;
+
     // Finalize all tracked statements before closing.
     // node-sqlite3-wasm won't release its directory-based file lock
     // if any prepared statements remain open.

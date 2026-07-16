@@ -94,21 +94,43 @@ function waitFor<T>(
 describe('MCP initialize handshake (issue #172)', () => {
   let tempDir: string;
   let child: ChildProcessWithoutNullStreams | null = null;
+  let childClosed: Promise<void> | null = null;
+
+  function spawnTracked(cwd: string): ChildProcessWithoutNullStreams {
+    child = spawnServer(cwd);
+    childClosed = new Promise((resolve) => child!.once('close', () => resolve()));
+    return child;
+  }
 
   beforeEach(() => {
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-mcp-init-'));
   });
 
-  afterEach(() => {
-    if (child && !child.killed) {
-      child.kill('SIGKILL');
+  afterEach(async () => {
+    try {
+      if (child) {
+        const pid = child.pid;
+        child.kill('SIGKILL');
+        await new Promise<void>((resolve, reject) => {
+          const timer = setTimeout(
+            () => reject(new Error(`MCP child (pid ${pid}) did not close within 5s of SIGKILL — tempDir ${tempDir} intentionally left for diagnosis`)),
+            5000,
+          );
+          childClosed!.then(
+            () => { clearTimeout(timer); resolve(); },
+            (error) => { clearTimeout(timer); reject(error); },
+          );
+        });
+      }
+    } finally {
       child = null;
+      childClosed = null;
     }
-    fs.rmSync(tempDir, { recursive: true, force: true });
+    fs.rmSync(tempDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });
 
   it('responds to initialize quickly when no .codegraph exists in cwd', async () => {
-    child = spawnServer(tempDir);
+    child = spawnTracked(tempDir);
     const events = tagStreams(child);
     sendInitialize(child, tempDir);
     const response = await waitFor(events, (e) => e.stream === 'stdout', 5000);
@@ -131,7 +153,7 @@ describe('MCP initialize handshake (issue #172)', () => {
     const cg = await CodeGraph.init(tempDir);
     cg.close();
 
-    child = spawnServer(tempDir);
+    child = spawnTracked(tempDir);
     const events = tagStreams(child);
     sendInitialize(child, tempDir);
 
