@@ -31,7 +31,8 @@ describe('Resolution Module', () => {
     if (cg) {
       cg.destroy();
       cg = null as any;
-    } else if (fs.existsSync(tempDir)) {
+    }
+    if (fs.existsSync(tempDir)) {
       fs.rmSync(tempDir, { recursive: true });
     }
   });

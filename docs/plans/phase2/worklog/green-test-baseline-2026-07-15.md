@@ -1,6 +1,6 @@
 # Green test baseline — Windows wasm/teardown fixes (2026-07-15)
 
-**Status**: complete — implemented, verified, and merged locally into `main`.
+**Status**: complete — implemented and verified, including external review follow-up.
 **Date**: 2026-07-15.
 **Source**: `PLAN-green-test-baseline.md` from the primary workspace.
 **Branch**: `fix/green-test-baseline`.
@@ -130,3 +130,46 @@
 - Post-merge full wasm suite under Node 22.23.1: exit 0; all runnable tests passed with the same 29 intentional skips.
 - MCP temp-directory count stayed at 43 before and after the post-merge full suite; no leak was introduced.
 - This final worklog update is included in the merge commit. Feature-branch/worktree cleanup follows after the commit.
+
+## Step 9 — External code-review follow-up: resolution temp leak (2026-07-16)
+
+### Review triage
+
+- Evaluated all nine surviving review candidates against the current code. The review's own recommendation is followed: fix the confirmed `resolution.test.ts` temp-directory leak only.
+- The other findings are accepted tradeoffs, speculative future-proofing, or cosmetic cleanup: the forced-wasm direct seam is deliberate plan scope; per-`get()` reset is load-bearing between reads and VACUUM; no streaming API exists today; MCP's bounded timeout and explicit timer cancellation match the approved teardown design; remaining notes do not justify scope expansion.
+
+### RED — leak reproduction
+
+- Verified `CodeGraph.destroy()` is only a backwards-compatible alias for `close()`; only `uninitialize()` removes project data.
+- Before the targeted run, `%TEMP%` contained 467 `codegraph-resolution-test-*` directories.
+- `npx vitest run __tests__/resolution.test.ts -t "should create resolver from CodeGraph instance"`: assertion passed, but the directory count rose to 468.
+- The newly leaked directory was `C:\Users\zuohg\AppData\Local\Temp\codegraph-resolution-test-UQCX1p`.
+- Root cause confirmed: successful `cg.destroy()` selects the `if (cg)` branch, so the `else if` containing `fs.rmSync(tempDir)` never executes.
+
+### GREEN — minimal teardown fix
+
+- Changed only the teardown control flow: destroy and null `cg` when present, then independently remove `tempDir` when it exists.
+- Re-ran the identical targeted test. It passed, and the directory count stayed at 468 before/after with zero newly leaked `codegraph-resolution-test-*` directories.
+- The single RED reproduction directory remains on disk because repository safety rules prohibit recursive directory deletion without separate confirmation; the fix prevents subsequent runs from adding more.
+
+### Follow-up verification
+
+- `npm run build`: exit 0.
+- Original five affected suites: 5/5 files passed; 74 passed / 2 skipped.
+- Resolution temp-directory count stayed at 468 before and after the five-suite regression run; zero new `codegraph-resolution-test-*` directories were created.
+- Change scope is intentionally limited to `__tests__/resolution.test.ts` plus this worklog. No product code, MCP timeout, adapter API, package/version, installer, or release behavior changed.
+- Review disposition: one confirmed leak fixed; eight non-blocking candidates left unchanged for the technical reasons recorded above.
+
+## Step 10 — Consolidate local planning files under docs (2026-07-16)
+
+- Moved all five root-level local planning files into `docs/plans/`: `PLAN-custom-scip-indexers.md`, `PLAN-green-test-baseline.md`, `PLAN-incremental-phase3-sync.md`, `PLAN-vbnet-scip-kind-recovery.md`, and `PLAN-vbnet-tier0-inheritance.md`.
+- Replaced the five root-level `.gitignore` entries with the scoped rule `docs/plans/PLAN-*.md`.
+- Did not ignore the entire `docs/` tree because it already contains tracked project documentation and worklogs; the scoped rule keeps only the local uppercase planning files ignored.
+- Verification: the root contains zero `PLAN-*.md` files; `docs/plans/` contains exactly the expected five files; `git check-ignore -v` maps every file to `.gitignore:53`; the existing 98 tracked files under `docs/` remain tracked; and `git diff --check` exits 0.
+
+## Step 11 — Publish review follow-up and planning-path update (2026-07-16)
+
+- Confirmed local `main` and `origin/main` were synchronized before staging (`0` ahead / `0` behind).
+- Fresh pre-push `npm run build`: exit 0.
+- Fresh pre-push affected-suite run: 5/5 files passed; 74 passed / 2 skipped.
+- Publish scope is limited to `.gitignore`, `__tests__/resolution.test.ts`, and this worklog. The five moved local planning files remain intentionally ignored and are not included in the commit.
