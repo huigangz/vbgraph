@@ -173,3 +173,5 @@
 - Fresh pre-push `npm run build`: exit 0.
 - Fresh pre-push affected-suite run: 5/5 files passed; 74 passed / 2 skipped.
 - Publish scope is limited to `.gitignore`, `__tests__/resolution.test.ts`, and this worklog. The five moved local planning files remain intentionally ignored and are not included in the commit.
+- Created commit `30a7566` (`fix: clean up resolution teardown and plan paths`) and pushed it to `origin/main` (`03a2436..30a7566`).
+- This worklog-only follow-up records the successful publication result; no code or configuration changed after the verified commit.
