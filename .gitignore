@@ -49,3 +49,9 @@ test_frameworks
 test-languages/
 
 nul
+docs/VBCODEGRAPH_REFERENCE.md
+PLAN-custom-scip-indexers.md
+PLAN-green-test-baseline.md
+PLAN-incremental-phase3-sync.md
+PLAN-vbnet-scip-kind-recovery.md
+PLAN-vbnet-tier0-inheritance.md
