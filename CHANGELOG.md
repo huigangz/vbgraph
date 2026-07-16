@@ -7,6 +7,14 @@ a [GitHub Release](https://github.com/colbymchenry/codegraph/releases) tagged
 This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- Calling `close()` more than once no longer throws `Database already closed`
+  when CodeGraph is using the wasm SQLite backend.
+- `optimize()` no longer fails during `VACUUM` when CodeGraph is using the
+  wasm SQLite backend.
+
 ## [0.9.0] - 2026-05-24
 
 Phase 2 ships: stale-aware sync that no longer wipes SCIP coverage when you

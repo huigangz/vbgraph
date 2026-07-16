@@ -12,6 +12,7 @@ import * as os from 'os';
 import {
   buildWasmFallbackBanner,
   WASM_FALLBACK_FIX_RECIPE,
+  WasmDatabaseAdapter,
 } from '../src/db/sqlite-adapter';
 import { DatabaseConnection } from '../src/db';
 import { CodeGraph } from '../src';
@@ -81,6 +82,36 @@ describe('DatabaseConnection — per-instance backend reporting', () => {
       expect(['native', 'wasm']).toContain(cg.getBackend());
     } finally {
       cg.destroy();
+    }
+  });
+});
+
+describe('WasmDatabaseAdapter — forced wasm regressions', () => {
+  let dir: string;
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-wasm-'));
+  });
+
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('close() twice is a no-op (parity with better-sqlite3)', () => {
+    const db = new WasmDatabaseAdapter(path.join(dir, 'test.db'));
+    db.close();
+    expect(() => db.close()).not.toThrow();
+  });
+
+  it('.get() then VACUUM succeeds (cursor reset after get)', () => {
+    const db = new WasmDatabaseAdapter(path.join(dir, 'test.db'));
+    try {
+      db.exec('CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)');
+      db.prepare('INSERT INTO t (v) VALUES (?)').run('a');
+      expect(db.prepare('SELECT * FROM t').get()).toBeDefined();
+      expect(() => db.exec('VACUUM')).not.toThrow();
+    } finally {
+      db.close();
     }
   });
 });
