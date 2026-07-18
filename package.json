@@ -1,11 +1,16 @@
 {
-  "name": "@colbymchenry/codegraph",
-  "version": "0.9.0",
-  "description": "Supercharge Claude Code with semantic code intelligence. 94% fewer tool calls • 77% faster exploration • 100% local.",
+  "name": "vbgraph",
+  "version": "1.0.0-rc.0",
+  "description": "Local-first code intelligence for AI agents, with first-class VB.NET and Delphi support. Fork of codegraph.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/huigangz/vbgraph.git"
+  },
+  "homepage": "https://github.com/huigangz/vbgraph",
   "bin": {
-    "codegraph": "./dist/bin/codegraph.js"
+    "vbgraph": "./dist/bin/vbgraph.js"
   },
   "files": [
     "dist",
@@ -13,11 +18,11 @@
     "README.md"
   ],
   "scripts": {
-    "build": "tsc && npm run copy-assets && node -e \"require('fs').chmodSync('dist/bin/codegraph.js', 0o755)\"",
+    "build": "tsc && npm run copy-assets && node -e \"require('fs').chmodSync('dist/bin/vbgraph.js', 0o755)\"",
     "preuninstall": "node dist/bin/uninstall.js",
     "copy-assets": "node -e \"const fs=require('fs');fs.mkdirSync('dist/db',{recursive:true});fs.copyFileSync('src/db/schema.sql','dist/db/schema.sql');fs.mkdirSync('dist/extraction/wasm',{recursive:true});fs.readdirSync('src/extraction/wasm').filter(f=>f.endsWith('.wasm')).forEach(f=>fs.copyFileSync('src/extraction/wasm/'+f,'dist/extraction/wasm/'+f));fs.mkdirSync('dist/extraction/scip',{recursive:true});fs.copyFileSync('src/extraction/scip/scip.proto','dist/extraction/scip/scip.proto')\"",
     "dev": "tsc --watch",
-    "cli": "npm run build && node dist/bin/codegraph.js",
+    "cli": "npm run build && node dist/bin/vbgraph.js",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:eval": "vitest run __tests__/evaluation/",
@@ -27,9 +32,11 @@
   "keywords": [
     "code-intelligence",
     "knowledge-graph",
-    "static-analysis"
+    "static-analysis",
+    "vbnet",
+    "delphi"
   ],
-  "author": "",
+  "author": "Huigang Zuo",
   "license": "MIT",
   "dependencies": {
     "@clack/prompts": "^1.3.0",

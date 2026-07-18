@@ -581,11 +581,11 @@ describe('Round-3 — derived-error persistence for scheduled refresh', () => {
   });
 
   it('CLI source routes derived-error warning to stderr (not stdout)', () => {
-    // Source-grep check: the bin/codegraph.ts scip-refresh handler must
+    // Source-grep check: the bin/vbgraph.ts scip-refresh handler must
     // use process.stderr.write (NOT warn() which writes to stdout) so
     // schedulers that capture stderr preserve the warning.
     const cliSrc = fs.readFileSync(
-      path.join(__dirname, '..', 'src', 'bin', 'codegraph.ts'),
+      path.join(__dirname, '..', 'src', 'bin', 'vbgraph.ts'),
       'utf-8',
     );
     // The handler must contain BOTH:
