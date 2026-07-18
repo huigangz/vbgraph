@@ -1,3 +1,5 @@
+> **vbgraph** is a fork of [codegraph](https://github.com/colbymchenry/codegraph) by Colby Mchenry (MIT), extended with a focus on VB.NET / Delphi code intelligence. Rebranding is in progress; see `docs/plans/rebrand/`.
+
 <div align="center">
 
 # CodeGraph
