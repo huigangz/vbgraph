@@ -1,6 +1,6 @@
-# CodeGraph SCIP-refresh systemd timer template (Linux).
+# VBGraph SCIP-refresh systemd timer template (Linux).
 #
-# Pair with codegraph-scip-refresh.service (see systemd.service.template).
+# Pair with vbgraph-scip-refresh.service (see systemd.service.template).
 # Triggers the service nightly at 03:00 local time.
 #
 # Install + lifecycle: see header of systemd.service.template.
@@ -14,8 +14,8 @@
 #   systemd-analyze calendar '*-*-* 03:00:00'
 
 [Unit]
-Description=Trigger CodeGraph SCIP refresh nightly
-Documentation=https://github.com/colbymchenry/codegraph
+Description=Trigger VBGraph SCIP refresh nightly
+Documentation=https://github.com/huigangz/vbgraph
 
 [Timer]
 # Daily at 03:00 local time. Change as desired.
@@ -31,8 +31,8 @@ Persistent=true
 RandomizedDelaySec=10min
 
 # Bind to the service unit name. Must match systemd.service.template's
-# filename (codegraph-scip-refresh.service).
-Unit=codegraph-scip-refresh.service
+# filename (vbgraph-scip-refresh.service).
+Unit=vbgraph-scip-refresh.service
 
 [Install]
 WantedBy=timers.target

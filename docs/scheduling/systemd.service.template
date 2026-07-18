@@ -1,36 +1,36 @@
-# CodeGraph SCIP-refresh systemd service template (Linux).
+# VBGraph SCIP-refresh systemd service template (Linux).
 #
-# Pair with codegraph-scip-refresh.timer (see systemd.timer.template).
+# Pair with vbgraph-scip-refresh.timer (see systemd.timer.template).
 # The service defines WHAT to run; the timer defines WHEN.
 #
 # HOW TO INSTALL (user-mode — no sudo required, runs as your user)
-#   1. Copy this file to ~/.config/systemd/user/codegraph-scip-refresh.service
-#      and the timer template to ~/.config/systemd/user/codegraph-scip-refresh.timer
+#   1. Copy this file to ~/.config/systemd/user/vbgraph-scip-refresh.service
+#      and the timer template to ~/.config/systemd/user/vbgraph-scip-refresh.timer
 #   2. Replace TWO placeholders in this file:
-#        REPLACE_WITH_CODEGRAPH   →  $(which codegraph)   e.g. /usr/local/bin/codegraph
+#        REPLACE_WITH_VBGRAPH   →  $(which vbgraph)   e.g. /usr/local/bin/vbgraph
 #        REPLACE_WITH_PROJECT     →  absolute path to your project root
 #   3. Reload systemd-user:
 #        systemctl --user daemon-reload
 #   4. Enable + start the timer:
-#        systemctl --user enable --now codegraph-scip-refresh.timer
+#        systemctl --user enable --now vbgraph-scip-refresh.timer
 #   5. Verify next run:
-#        systemctl --user list-timers codegraph-scip-refresh
+#        systemctl --user list-timers vbgraph-scip-refresh
 #
 # HOW TO INSTALL (system-mode — requires sudo, runs as root or as User= below)
-#   1. Copy to /etc/systemd/system/codegraph-scip-refresh.service
+#   1. Copy to /etc/systemd/system/vbgraph-scip-refresh.service
 #   2. Add a `User=youruser` line under [Service] below (uncommented).
 #   3. sudo systemctl daemon-reload
-#   4. sudo systemctl enable --now codegraph-scip-refresh.timer
+#   4. sudo systemctl enable --now vbgraph-scip-refresh.timer
 #
 # HOW TO UNINSTALL
-#   systemctl --user disable --now codegraph-scip-refresh.timer
-#   rm ~/.config/systemd/user/codegraph-scip-refresh.{service,timer}
+#   systemctl --user disable --now vbgraph-scip-refresh.timer
+#   rm ~/.config/systemd/user/vbgraph-scip-refresh.{service,timer}
 #   systemctl --user daemon-reload
 #
 # LOGS
-#   Per-run output:  <PROJECT>/.codegraph/logs/scip-refresh-<timestamp>.log
-#   Sidecar:         <PROJECT>/.codegraph/scip-last-refresh.json
-#   journald (systemd's own log): journalctl --user -u codegraph-scip-refresh -e
+#   Per-run output:  <PROJECT>/.vbgraph/logs/scip-refresh-<timestamp>.log
+#   Sidecar:         <PROJECT>/.vbgraph/scip-last-refresh.json
+#   journald (systemd's own log): journalctl --user -u vbgraph-scip-refresh -e
 #
 # EXIT CODES (per design § P2.3)
 #   0 = ok, 1 = indexer failed, 2 = ingest failed (incl. post-ingest assertion)
@@ -39,15 +39,15 @@
 # captures stderr for diagnostics.
 
 [Unit]
-Description=CodeGraph SCIP refresh (regenerate compiler-grade index)
-Documentation=https://github.com/colbymchenry/codegraph
+Description=VBGraph SCIP refresh (regenerate compiler-grade index)
+Documentation=https://github.com/huigangz/vbgraph
 # Avoid races with manual invocations.
 After=network-online.target
 
 [Service]
 Type=oneshot
 WorkingDirectory=REPLACE_WITH_PROJECT
-ExecStart=REPLACE_WITH_CODEGRAPH scip-refresh --quiet REPLACE_WITH_PROJECT
+ExecStart=REPLACE_WITH_VBGRAPH scip-refresh --quiet REPLACE_WITH_PROJECT
 
 # Uncomment for system-mode install (running as a specific user):
 # User=youruser
@@ -62,7 +62,7 @@ CPUQuota=50%
 Nice=10
 IOSchedulingClass=idle
 
-# Avoid an aborted run leaving a half-acquired lock; codegraph handles
+# Avoid an aborted run leaving a half-acquired lock; vbgraph handles
 # its own mutex, but the systemd-level timeout is a safety net.
 TimeoutStartSec=30min
 

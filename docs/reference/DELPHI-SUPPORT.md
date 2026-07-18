@@ -1,12 +1,12 @@
-# Pascal / Delphi Support for CodeGraph
+# Pascal / Delphi Support for VBGraph
 
 ## Why Delphi?
 
 Delphi (Object Pascal) remains one of the most widely used languages for Windows desktop and enterprise applications. With an estimated **1.5–3 million active developers** and a strong presence in industries like healthcare, finance, logistics, and government, Delphi projects often involve large, long-lived codebases that benefit significantly from semantic code intelligence.
 
-Many Delphi codebases have grown over decades — making structural understanding, impact analysis, and cross-file navigation exactly the kind of tooling gap CodeGraph is designed to fill.
+Many Delphi codebases have grown over decades — making structural understanding, impact analysis, and cross-file navigation exactly the kind of tooling gap VBGraph is designed to fill.
 
-Adding Delphi support positions CodeGraph as a uniquely valuable tool for a community that has historically been underserved by modern static analysis and AI-assisted development tools.
+Adding Delphi support positions VBGraph as a uniquely valuable tool for a community that has historically been underserved by modern static analysis and AI-assisted development tools.
 
 ## What Was Implemented
 
@@ -51,7 +51,7 @@ The DFM ↔ PAS linkage via event handlers enables **cross-file impact analysis*
 
 ## Architecture
 
-The implementation follows CodeGraph's established patterns:
+The implementation follows VBGraph's established patterns:
 
 - **Pascal extraction** uses the standard `TreeSitterExtractor` with a Pascal-specific `LanguageExtractor` configuration and a `visitPascalNode()` hook for AST nodes that require special handling (e.g., `declType` wrappers, `defProc` implementation bodies)
 - **DFM/FMX extraction** uses a `DfmExtractor` class — analogous to `LiquidExtractor` and `SvelteExtractor` — that parses the line-based format with regex
@@ -71,7 +71,7 @@ Testing with a large Delphi codebase (~3,400 files, ~244k nodes) uncovered perfo
 | **Method index for `defProc`** — replaced O(n) `find()` with `Map` lookup when linking implementation bodies to declarations | `tree-sitter.ts` (Pascal-specific) | O(1) per implementation body |
 | **Delphi-specific excludes** — `__history/**`, `__recovery/**`, `*.dcu` added to default excludes | `types.ts` (Pascal-specific) | Skips Delphi IDE temp files during indexing |
 
-**Result:** Reference resolution on a large Delphi project dropped from **~30 minutes to ~15 seconds** (120x speedup). The general improvements (fuzzy index, import cache, kind cache) will benefit all CodeGraph users.
+**Result:** Reference resolution on a large Delphi project dropped from **~30 minutes to ~15 seconds** (120x speedup). The general improvements (fuzzy index, import cache, kind cache) will benefit all VBGraph users.
 
 ## Files Changed
 
@@ -107,8 +107,8 @@ The npm package `tree-sitter-pascal@0.0.1` is outdated (uses NAN bindings, incom
 ### 1. Clone and build
 
 ```bash
-git clone -b delphi-support https://github.com/omonien/codegraph.git
-cd codegraph
+git clone -b delphi-support https://github.com/omonien/vbgraph.git
+cd vbgraph
 npm install
 npm run build
 ```
@@ -122,36 +122,36 @@ npm link
 Verify with:
 
 ```bash
-codegraph --version
+vbgraph --version
 ```
 
 ### 3. Index a Delphi project
 
 ```bash
 cd /path/to/your/delphi-project
-codegraph init -i
-codegraph index
+vbgraph init -i
+vbgraph index
 ```
 
 ### 4. Query the code graph
 
 ```bash
-codegraph status                          # Show index statistics
-codegraph query "TFormMain"               # Search for a symbol
-codegraph context "What does TCustomer do?"  # Build AI context
+vbgraph status                          # Show index statistics
+vbgraph query "TFormMain"               # Search for a symbol
+vbgraph context "What does TCustomer do?"  # Build AI context
 ```
 
 ### 5. Set up the MCP server (for Claude Code)
 
 ```bash
-codegraph install
+vbgraph install
 ```
 
-This configures the MCP server, tool permissions, auto-sync hooks, and CLAUDE.md in one step. After that, start Claude Code in the project — CodeGraph tools will be available immediately.
+This configures the MCP server, tool permissions, auto-sync hooks, and CLAUDE.md in one step. After that, start Claude Code in the project — VBGraph tools will be available immediately.
 
 ### 6. Clean up
 
 ```bash
-npm unlink -g @colbymchenry/codegraph       # Remove global link
-rm -rf /path/to/delphi-project/.codegraph   # Remove project index
+npm unlink -g vbgraph       # Remove global link
+rm -rf /path/to/delphi-project/.vbgraph   # Remove project index
 ```

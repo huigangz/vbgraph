@@ -1,8 +1,8 @@
-# Running the agent-behavior test (how agents actually use codegraph)
+# Running the agent-behavior test (how agents actually use vbgraph)
 
-This explains how to measure **how a Claude Code agent uses the codegraph MCP
+This explains how to measure **how a Claude Code agent uses the vbgraph MCP
 tools** on a real repo — which tools it calls (does it lead with
-`codegraph_explore`?), how many follow-up `Read`/`Grep`s it does, and the token
+`vbgraph_explore`?), how many follow-up `Read`/`Grep`s it does, and the token
 cost. Use it when changing tool guidance (`server-instructions.ts`,
 `instructions-template.ts`, tool descriptions) or retrieval, to verify the
 change actually shifts agent behavior.
@@ -28,14 +28,14 @@ headless (and ask for the Explore subagent in the prompt if you want that path).
 
 - **tmux 3.0+**
 - A logged-in `claude` CLI (Claude Max or API).
-- codegraph configured as an MCP server (`claude mcp list` shows `codegraph`).
+- vbgraph configured as an MCP server (`claude mcp list` shows `vbgraph`).
   The interactive harness uses your global config, so it runs whatever
-  `codegraph` resolves to — point that at your dev build (`npm link` / the
+  `vbgraph` resolves to — point that at your dev build (`npm link` / the
   symlinked global) to test local changes.
 - A target repo, cloned and indexed:
   ```bash
   git clone --depth 1 https://github.com/square/okhttp /tmp/corpus/okhttp
-  cd /tmp/corpus/okhttp && codegraph init -i
+  cd /tmp/corpus/okhttp && vbgraph init -i
   ```
   Good scale spread for a sweep: Alamofire (~100 files), Excalidraw (~600),
   OkHttp (~640), VS Code (~10k).
@@ -57,7 +57,7 @@ finish, then prints:
 - the `Done (N tool uses · Xk tokens · Ym)` subagent summary (from the pane),
 - the `Context Xk/1.0M` main-session size,
 - a **tool breakdown** parsed from the session logs (main + subagents), ending
-  in a `VERDICT: codegraph_explore used Nx | Read N | Grep/Bash N` line.
+  in a `VERDICT: vbgraph_explore used Nx | Read N | Grep/Bash N` line.
 
 ### Startup robustness (so unattended runs don't silently no-op)
 
@@ -120,9 +120,9 @@ done
 ## What "good" looks like
 
 After the explore-first guidance (PR #191), an understanding question should
-show the agent **leading with `codegraph_explore`** and using `search`/`node`
+show the agent **leading with `vbgraph_explore`** and using `search`/`node`
 to fill gaps — not a wall of `Read`/`Grep`. Example faithful run:
-`VERDICT: codegraph_explore used 3x | Read 8 | Grep/Bash 1`. If `explore` is 0
+`VERDICT: vbgraph_explore used 3x | Read 8 | Grep/Bash 1`. If `explore` is 0
 and `Read`/`Grep` dominate, the guidance regressed.
 
 ## Output artifacts
