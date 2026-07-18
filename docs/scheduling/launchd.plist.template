@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  CodeGraph SCIP-refresh launchd template (macOS).
+  VBGraph SCIP-refresh launchd template (macOS).
 
   WHAT IT DOES
-    Runs `codegraph scip-refresh` nightly at 03:00 local time, re-running
+    Runs `vbgraph scip-refresh` nightly at 03:00 local time, re-running
     the configured SCIP indexer (default: scip-dotnet) and re-ingesting
     its output. See the design doc § P2.3 for the lifecycle.
 
@@ -13,38 +13,38 @@
     precision. A nightly refresh keeps the stale window bounded.
 
   HOW TO INSTALL
-    1. Copy this file to ~/Library/LaunchAgents/com.codegraph.scip-refresh.plist
+    1. Copy this file to ~/Library/LaunchAgents/com.vbgraph.scip-refresh.plist
     2. Replace the THREE placeholders:
        - REPLACE_WITH_NODE_BIN   →  $(which node)        e.g. /usr/local/bin/node
-       - REPLACE_WITH_CODEGRAPH  →  $(which codegraph)   e.g. /usr/local/bin/codegraph
+       - REPLACE_WITH_VBGRAPH  →  $(which vbgraph)   e.g. /usr/local/bin/vbgraph
        - REPLACE_WITH_PROJECT    →  absolute path to your project root
     3. Load it:
-         launchctl load -w ~/Library/LaunchAgents/com.codegraph.scip-refresh.plist
+         launchctl load -w ~/Library/LaunchAgents/com.vbgraph.scip-refresh.plist
     4. Verify next-run time:
-         launchctl list | grep com.codegraph
+         launchctl list | grep com.vbgraph
 
   HOW TO UNINSTALL
-    launchctl unload -w ~/Library/LaunchAgents/com.codegraph.scip-refresh.plist
-    rm ~/Library/LaunchAgents/com.codegraph.scip-refresh.plist
+    launchctl unload -w ~/Library/LaunchAgents/com.vbgraph.scip-refresh.plist
+    rm ~/Library/LaunchAgents/com.vbgraph.scip-refresh.plist
 
   EXIT CODES (per design § P2.3)
     0 = ok, 1 = indexer failed, 2 = ingest failed (incl. post-ingest assertion)
 
   LOGS
-    Per-run output: <PROJECT>/.codegraph/logs/scip-refresh-<timestamp>.log
-    Sidecar:        <PROJECT>/.codegraph/scip-last-refresh.json
+    Per-run output: <PROJECT>/.vbgraph/logs/scip-refresh-<timestamp>.log
+    Sidecar:        <PROJECT>/.vbgraph/scip-last-refresh.json
     launchd stdout/stderr: see <key>StandardOutPath</key> below.
 -->
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.codegraph.scip-refresh</string>
+    <string>com.vbgraph.scip-refresh</string>
 
     <key>ProgramArguments</key>
     <array>
         <string>REPLACE_WITH_NODE_BIN</string>
-        <string>REPLACE_WITH_CODEGRAPH</string>
+        <string>REPLACE_WITH_VBGRAPH</string>
         <string>scip-refresh</string>
         <string>--quiet</string>
         <string>REPLACE_WITH_PROJECT</string>
@@ -63,11 +63,11 @@
     </dict>
 
     <!-- launchd captures stdout/stderr to these files. Per-run logs are
-         additionally written by codegraph to .codegraph/logs/ — see above. -->
+         additionally written by vbgraph to .vbgraph/logs/ — see above. -->
     <key>StandardOutPath</key>
-    <string>REPLACE_WITH_PROJECT/.codegraph/logs/scip-refresh-launchd.out</string>
+    <string>REPLACE_WITH_PROJECT/.vbgraph/logs/scip-refresh-launchd.out</string>
     <key>StandardErrorPath</key>
-    <string>REPLACE_WITH_PROJECT/.codegraph/logs/scip-refresh-launchd.err</string>
+    <string>REPLACE_WITH_PROJECT/.vbgraph/logs/scip-refresh-launchd.err</string>
 
     <!-- Don't keep the job alive after success — launchd should only run
          it on schedule, not restart on exit. -->

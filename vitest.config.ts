@@ -15,8 +15,8 @@ import * as os from 'os';
 // to avoid the OOM, low enough that latent test-isolation issues in
 // resolution.test.ts (re-export chain following) don't surface under the
 // heavy-parallel reordering vitest does at higher cap. Override via env
-// `CODEGRAPH_TEST_MAX_FORKS` when running on machines with more headroom.
-const ENV_CAP = parseInt(process.env.CODEGRAPH_TEST_MAX_FORKS ?? '', 10);
+// `VBGRAPH_TEST_MAX_FORKS` when running on machines with more headroom.
+const ENV_CAP = parseInt(process.env.VBGRAPH_TEST_MAX_FORKS ?? '', 10);
 const POOL_CAP = Number.isFinite(ENV_CAP) && ENV_CAP > 0
   ? ENV_CAP
   : Math.min(os.cpus()?.length ?? 2, 2);

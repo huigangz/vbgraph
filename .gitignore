@@ -40,8 +40,8 @@ npm-debug.log*
 # Local Claude settings
 .claude/settings.local.json
 
-# CodeGraph data directories (in test projects)
-.codegraph/
+# vbgraph data directories (in test projects)
+.vbgraph/
 
 test_frameworks
 
@@ -49,5 +49,3 @@ test_frameworks
 test-languages/
 
 nul
-docs/VBCODEGRAPH_REFERENCE.md
-docs/plans/PLAN-*.md
