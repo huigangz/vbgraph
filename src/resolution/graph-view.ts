@@ -20,7 +20,7 @@
  * mutation visibility within a single stage.
  *
  * Mutation discipline: resolvers MUST NOT mutate the arrays returned by
- * these methods. In dev mode (`process.env.CODEGRAPH_DEV === '1'`) the top
+ * these methods. In dev mode (`process.env.VBGRAPH_DEV === '1'`) the top
  * level of each returned array is frozen to catch accidental mutation;
  * production paths skip the freeze for the obvious perf reason.
  */
@@ -111,7 +111,7 @@ export class QueryGraphView implements GraphView {
     this.projectRoot = projectRoot;
     this.fsExists = fs.exists;
     this.fsReadFile = fs.readFile;
-    this.devFreeze = process.env.CODEGRAPH_DEV === '1';
+    this.devFreeze = process.env.VBGRAPH_DEV === '1';
   }
 
   private freeze<T>(arr: readonly T[]): readonly T[] {

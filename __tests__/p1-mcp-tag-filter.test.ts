@@ -1,5 +1,5 @@
 /**
- * P1.5 PR-16 — MCP codegraph_search tag filter.
+ * P1.5 PR-16 — MCP vbgraph_search tag filter.
  *
  * Regression for the tag-filter false-negative bug. The earlier fix
  * over-fetched candidates up to a 500-row cap and post-filtered. That
@@ -25,12 +25,12 @@ let cg: any;
 let handler: ToolHandler;
 
 beforeEach(async () => {
-  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-mcp-tag-'));
-  fs.mkdirSync(path.join(tmpDir, '.codegraph'));
+  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vbgraph-mcp-tag-'));
+  fs.mkdirSync(path.join(tmpDir, '.vbgraph'));
   fs.writeFileSync(path.join(tmpDir, 'app.ts'), 'export const x = 1;\n');
 
-  const CodeGraph = (await import('../src/index')).default;
-  cg = CodeGraph.initSync(tmpDir, {
+  const VBGraph = (await import('../src/index')).default;
+  cg = VBGraph.initSync(tmpDir, {
     config: { include: ['**/*.ts'], exclude: [] },
   });
   await cg.indexAll();
@@ -81,7 +81,7 @@ function seedNodes(opts: {
   }
 }
 
-describe('MCP codegraph_search — DB-side tag filter', () => {
+describe('MCP vbgraph_search — DB-side tag filter', () => {
   it('finds tagged matches even when 1000+ untagged matches rank higher', async () => {
     // Seed 1000 untagged classes all named "ServiceFoo<N>" (perfect
     // FTS hits for "ServiceFoo"), plus 5 tagged classes also matching.
@@ -97,7 +97,7 @@ describe('MCP codegraph_search — DB-side tag filter', () => {
       tag: 'spring:service',
     });
 
-    const result = await handler.execute('codegraph_search', {
+    const result = await handler.execute('vbgraph_search', {
       query: 'ServiceFoo',
       tag: 'spring:service',
       limit: 10,
@@ -123,7 +123,7 @@ describe('MCP codegraph_search — DB-side tag filter', () => {
     });
 
     // Query matches untagged "Foo*" but tag matches "Bar*" — intersection empty.
-    const result = await handler.execute('codegraph_search', {
+    const result = await handler.execute('vbgraph_search', {
       query: 'Foo',
       tag: 'spring:service',
       limit: 10,
@@ -139,7 +139,7 @@ describe('MCP codegraph_search — DB-side tag filter', () => {
       taggedNamePrefix: 'TaggedNode',
       tag: 'spring:service',
     });
-    const result = await handler.execute('codegraph_search', {
+    const result = await handler.execute('vbgraph_search', {
       query: 'Node',
       limit: 20,
     });

@@ -2,7 +2,7 @@
  * MCP `initialize` handshake regression tests.
  *
  * Issue #172: on slow filesystems (Docker Desktop VirtioFS on macOS, WSL2),
- * the MCP server was blocking the initialize response on CodeGraph.open() and
+ * the MCP server was blocking the initialize response on VBGraph.open() and
  * Parser.init() (web-tree-sitter WASM bootstrap), which could take longer than
  * Claude Code's ~30s handshake timeout. The child process stayed alive and
  * had received the request, but never sent a response, so tools never
@@ -15,7 +15,7 @@ import { spawn, ChildProcessWithoutNullStreams } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { CodeGraph } from '../src';
+import { VBGraph } from '../src';
 
 const BIN = path.resolve(__dirname, '../dist/bin/vbgraph.js');
 
@@ -103,7 +103,7 @@ describe('MCP initialize handshake (issue #172)', () => {
   }
 
   beforeEach(() => {
-    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-mcp-init-'));
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vbgraph-mcp-init-'));
   });
 
   afterEach(async () => {
@@ -129,7 +129,7 @@ describe('MCP initialize handshake (issue #172)', () => {
     fs.rmSync(tempDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });
 
-  it('responds to initialize quickly when no .codegraph exists in cwd', async () => {
+  it('responds to initialize quickly when no .vbgraph exists in cwd', async () => {
     child = spawnTracked(tempDir);
     const events = tagStreams(child);
     sendInitialize(child, tempDir);
@@ -142,15 +142,15 @@ describe('MCP initialize handshake (issue #172)', () => {
   }, 10000);
 
   it('sends initialize response BEFORE tryInitializeDefault finishes', async () => {
-    // Seed a real .codegraph so the server's tryInitializeDefault path runs
-    // its full body: CodeGraph.open() (which awaits initGrammars()) and then
+    // Seed a real .vbgraph so the server's tryInitializeDefault path runs
+    // its full body: VBGraph.open() (which awaits initGrammars()) and then
     // startWatching() (which logs "File watcher active" to stderr). On any
     // platform, that stderr log is observable evidence that tryInitializeDefault
     // has completed. The contract we're protecting: the JSON-RPC response on
     // stdout must arrive BEFORE that stderr log. If a future change re-awaits
     // tryInitializeDefault before sendResult, this ordering inverts and the
     // test fails — regardless of how fast the local filesystem is.
-    const cg = await CodeGraph.init(tempDir);
+    const cg = await VBGraph.init(tempDir);
     cg.close();
 
     child = spawnTracked(tempDir);
@@ -166,6 +166,6 @@ describe('MCP initialize handshake (issue #172)', () => {
     expect(response.seq).toBeLessThan(watcherLog.seq);
     const json = JSON.parse(response.text);
     expect(json.id).toBe(0);
-    expect(json.result.serverInfo.name).toBe('codegraph');
+    expect(json.result.serverInfo.name).toBe('vbgraph');
   }, 20000);
 });

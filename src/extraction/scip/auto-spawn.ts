@@ -1,5 +1,5 @@
 /**
- * `codegraph index --scip-auto` spawn orchestration.
+ * `vbgraph index --scip-auto` spawn orchestration.
  *
  * Detects installed SCIP indexers, spawns each one (sequentially, lightest
  * toolchain first) for the languages present in the repo, and returns the
@@ -47,8 +47,8 @@ function spawnRank(name: string): number {
 export interface ScipAutoSpawnOptions {
   /** Repo root the indexers run in. */
   projectRoot: string;
-  /** The project's `.codegraph/` directory. */
-  codegraphDir: string;
+  /** The project's `.vbgraph/` directory. */
+  vbgraphDir: string;
   /** Languages actually present in the repo. */
   languagesInRepo: ReadonlySet<Language>;
   /** Restrict to this language subset (`--languages`); omit for no restriction. */
@@ -131,11 +131,11 @@ function spawnIndexer(
 export async function runScipAutoSpawn(
   opts: ScipAutoSpawnOptions,
 ): Promise<ScipAutoSpawnResult> {
-  const release = acquireScipAutoLock(opts.codegraphDir);
+  const release = acquireScipAutoLock(opts.vbgraphDir);
   try {
     const detected = opts.detected ?? (await detectInstalledScipIndexers());
-    const cacheDir = path.join(opts.codegraphDir, 'scip-cache');
-    const logsDir = path.join(opts.codegraphDir, 'logs');
+    const cacheDir = path.join(opts.vbgraphDir, 'scip-cache');
+    const logsDir = path.join(opts.vbgraphDir, 'logs');
     fs.mkdirSync(cacheDir, { recursive: true });
     fs.mkdirSync(logsDir, { recursive: true });
 

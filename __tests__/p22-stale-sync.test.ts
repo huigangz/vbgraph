@@ -34,7 +34,7 @@ import type { Node, Edge } from '../src/types';
 let tmpDir: string;
 
 beforeEach(() => {
-  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-p22-'));
+  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vbgraph-p22-'));
 });
 
 afterEach(() => {

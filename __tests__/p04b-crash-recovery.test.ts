@@ -2,7 +2,7 @@
  * P0.4b — open-time cleanup of SCIP ingestions left incomplete by a crash.
  *
  * A crash before STAGE F leaves an `scip_ingestions` row with `completed_at`
- * NULL and a partially-mutated graph. `CodeGraph.open()/openSync()` must
+ * NULL and a partially-mutated graph. `VBGraph.open()/openSync()` must
  * garbage-collect that partial data; a completed ingestion must survive.
  */
 
@@ -11,7 +11,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
-import { CodeGraph } from '../src';
+import { VBGraph } from '../src';
 import { DatabaseConnection, getDatabasePath } from '../src/db';
 import { QueryBuilder } from '../src/db/queries';
 import { persistScipIndex } from '../src/extraction/scip/persister';
@@ -23,7 +23,7 @@ const CLASS = 7;
 let tmpDir: string;
 
 beforeEach(() => {
-  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-p04b-'));
+  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vbgraph-p04b-'));
 });
 
 afterEach(() => {
@@ -32,7 +32,7 @@ afterEach(() => {
 
 /** Init a project and ingest a small synthetic `.scip` into its database. */
 async function initAndIngest(scipPath: string): Promise<void> {
-  CodeGraph.initSync(tmpDir).close();
+  VBGraph.initSync(tmpDir).close();
   await writeSyntheticScip(scipPath, {
     metadata: {},
     documents: [
@@ -61,7 +61,7 @@ describe('open-time incomplete-ingestion cleanup', () => {
     await initAndIngest(path.join(tmpDir, 'a.scip'));
     markIngestionCrashed();
 
-    const cg = CodeGraph.openSync(tmpDir);
+    const cg = VBGraph.openSync(tmpDir);
     try {
       expect(cg.getStats().nodeCount).toBe(0);
       expect(cg.getStats().edgeCount).toBe(0);
@@ -90,7 +90,7 @@ describe('open-time incomplete-ingestion cleanup', () => {
     await initAndIngest(path.join(tmpDir, 'a.scip'));
     // No crash simulation — the ingestion completed normally.
 
-    const cg = CodeGraph.openSync(tmpDir);
+    const cg = VBGraph.openSync(tmpDir);
     try {
       // file node + class A node survive.
       expect(cg.getStats().nodeCount).toBeGreaterThan(0);
@@ -103,7 +103,7 @@ describe('open-time incomplete-ingestion cleanup', () => {
     await initAndIngest(path.join(tmpDir, 'a.scip'));
     markIngestionCrashed();
 
-    const cg = await CodeGraph.open(tmpDir);
+    const cg = await VBGraph.open(tmpDir);
     try {
       expect(cg.getStats().nodeCount).toBe(0);
     } finally {

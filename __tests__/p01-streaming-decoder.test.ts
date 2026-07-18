@@ -27,7 +27,7 @@ import {
 let tmpDir: string;
 
 beforeEach(() => {
-  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-scip-'));
+  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vbgraph-scip-'));
 });
 
 afterEach(() => {

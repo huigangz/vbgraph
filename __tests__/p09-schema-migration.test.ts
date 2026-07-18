@@ -20,7 +20,7 @@ import type { SqliteDatabase } from '../src/db/sqlite-adapter';
 let tmpDir: string;
 
 beforeEach(() => {
-  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-mig-'));
+  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vbgraph-mig-'));
 });
 
 afterEach(() => {

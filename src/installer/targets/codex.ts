@@ -2,7 +2,7 @@
  * OpenAI Codex CLI target.
  *
  *   - MCP server entry to `~/.codex/config.toml` as the dotted-key
- *     table `[mcp_servers.codegraph]`. TOML — not JSON — handled by
+ *     table `[mcp_servers.vbgraph]`. TOML — not JSON — handled by
  *     the narrow serializer in `./toml.ts`.
  *   - Instructions to `~/.codex/AGENTS.md`.
  *
@@ -31,13 +31,13 @@ import {
   replaceOrAppendMarkedSection,
 } from './shared';
 import {
-  CODEGRAPH_SECTION_END,
-  CODEGRAPH_SECTION_START,
+  VBGRAPH_SECTION_END,
+  VBGRAPH_SECTION_START,
   INSTRUCTIONS_TEMPLATE,
 } from '../instructions-template';
 import { buildTomlTable, removeTomlTable, upsertTomlTable } from './toml';
 
-const TOML_HEADER = 'mcp_servers.codegraph';
+const TOML_HEADER = 'mcp_servers.vbgraph';
 
 function configDir(): string {
   return path.join(os.homedir(), '.codex');
@@ -112,7 +112,7 @@ class CodexTarget implements AgentTarget {
     }
 
     const instr = instructionsPath();
-    const instrAction = removeMarkedSection(instr, CODEGRAPH_SECTION_START, CODEGRAPH_SECTION_END);
+    const instrAction = removeMarkedSection(instr, VBGRAPH_SECTION_START, VBGRAPH_SECTION_END);
     files.push({ path: instr, action: instrAction });
 
     return { files };
@@ -122,7 +122,7 @@ class CodexTarget implements AgentTarget {
     if (loc !== 'global') {
       return '# Codex CLI has no project-local config — use --location=global.\n';
     }
-    const block = buildCodegraphBlock();
+    const block = buildVbgraphBlock();
     return `# Add to ${tomlConfigPath()}\n\n${block}\n`;
   }
 
@@ -132,7 +132,7 @@ class CodexTarget implements AgentTarget {
   }
 }
 
-function buildCodegraphBlock(): string {
+function buildVbgraphBlock(): string {
   const mcp = getMcpServerConfig();
   return buildTomlTable(TOML_HEADER, {
     command: mcp.command,
@@ -145,7 +145,7 @@ function writeMcpEntry(): WriteResult['files'][number] {
   const dir = path.dirname(file);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 
-  const block = buildCodegraphBlock();
+  const block = buildVbgraphBlock();
   // Single read — `existing === ''` derives both "is the file empty
   // or absent" and "what was its content," avoiding a TOCTOU window
   // between two `fs.existsSync` calls.
@@ -168,8 +168,8 @@ function writeInstructionsEntry(): WriteResult['files'][number] {
   const action = replaceOrAppendMarkedSection(
     file,
     INSTRUCTIONS_TEMPLATE,
-    CODEGRAPH_SECTION_START,
-    CODEGRAPH_SECTION_END,
+    VBGRAPH_SECTION_START,
+    VBGRAPH_SECTION_END,
   );
   const mapped: 'created' | 'updated' | 'unchanged' =
     action === 'created' ? 'created'

@@ -25,7 +25,7 @@ export interface EvalResult {
 export interface EvalReport {
   timestamp: string;
   codebasePath: string;
-  codegraphSha: string;
+  vbgraphSha: string;
   summary: {
     total: number;
     passed: number;

@@ -2,7 +2,7 @@
  * P2.4 — Status command helpers: sidecar reader + per-language tier
  *        detection + QueryBuilder grouped count.
  *
- * Drives the new CodeGraph public APIs directly (sidecar JSON via fs,
+ * Drives the new VBGraph public APIs directly (sidecar JSON via fs,
  * tier detection by inserting nodes of known provenance). The CLI text/
  * JSON output is covered indirectly — the JSON shape is a transitive
  * function of these helpers, so testing the helpers covers the output
@@ -18,7 +18,7 @@ import { DatabaseConnection, getDatabasePath } from '../src/db';
 import { QueryBuilder } from '../src/db/queries';
 import type { SqliteDatabase } from '../src/db/sqlite-adapter';
 import type { Node, ScipLastRefresh } from '../src/types';
-import CodeGraph from '../src/index';
+import VBGraph from '../src/index';
 import { detectInstalledScipIndexers } from '../src/extraction/scip';
 
 // SCIP indexer detection probes the PATH for ~7 binaries with 2s timeouts.
@@ -35,7 +35,7 @@ let db: SqliteDatabase;
 let qb: QueryBuilder;
 
 beforeEach(() => {
-  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-p24-'));
+  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vbgraph-p24-'));
   projectRoot = path.join(tmpDir, 'project');
   fs.mkdirSync(projectRoot, { recursive: true });
 });
@@ -49,32 +49,32 @@ afterEach(() => {
 });
 
 /**
- * QueryBuilder-direct setup: bypasses CodeGraph init, opens the DB
+ * QueryBuilder-direct setup: bypasses VBGraph init, opens the DB
  * directly. Used by the getNodeCountsByLanguageAndProvenance tests
- * that don't need the higher-level CodeGraph instance.
+ * that don't need the higher-level VBGraph instance.
  */
 function setupQueryBuilder(): void {
-  fs.mkdirSync(path.join(projectRoot, '.codegraph'), { recursive: true });
+  fs.mkdirSync(path.join(projectRoot, '.vbgraph'), { recursive: true });
   conn = DatabaseConnection.initialize(getDatabasePath(projectRoot));
   db = conn.getDb();
   qb = new QueryBuilder(db);
 }
 
 /**
- * CodeGraph-API setup: seeds project + DB, then returns a helper to
- * reopen as a CodeGraph instance once seeding is done.
+ * VBGraph-API setup: seeds project + DB, then returns a helper to
+ * reopen as a VBGraph instance once seeding is done.
  *
  * WASM SQLite does NOT allow two open connections on the same file
  * ("database is locked"), so we seed via QueryBuilder FIRST, close that
- * connection, then call CodeGraph.openSync. Tests that need to insert
+ * connection, then call VBGraph.openSync. Tests that need to insert
  * MORE data after opening can grab cg.getStats() etc. but cannot mix
  * with a separate QueryBuilder until cg.close().
  *
- * Returns `{ reopenCg }` — call to get a fresh CodeGraph; caller closes.
+ * Returns `{ reopenCg }` — call to get a fresh VBGraph; caller closes.
  */
-function setupForCodeGraph(): { reopenCg: () => CodeGraph } {
-  // Init the project (creates .codegraph/ dir + config + DB schema).
-  const cgInit = CodeGraph.initSync(projectRoot);
+function setupForVBGraph(): { reopenCg: () => VBGraph } {
+  // Init the project (creates .vbgraph/ dir + config + DB schema).
+  const cgInit = VBGraph.initSync(projectRoot);
   cgInit.close();
   // Open the DB directly for seeding.
   conn = DatabaseConnection.open(getDatabasePath(projectRoot));
@@ -82,12 +82,12 @@ function setupForCodeGraph(): { reopenCg: () => CodeGraph } {
   qb = new QueryBuilder(db);
   return {
     reopenCg: () => {
-      // Close our seeding connection BEFORE CodeGraph opens its own.
+      // Close our seeding connection BEFORE VBGraph opens its own.
       if (conn) {
         try { conn.close(); } catch { /* ignore */ }
         conn = undefined;
       }
-      return CodeGraph.openSync(projectRoot);
+      return VBGraph.openSync(projectRoot);
     },
   };
 }
@@ -156,12 +156,12 @@ describe('P2.4 — getNodeCountsByLanguageAndProvenance', () => {
 });
 
 // ---------------------------------------------------------------------------
-// CodeGraph.getLastScipRefresh (P2.4.2 sidecar reader)
+// VBGraph.getLastScipRefresh (P2.4.2 sidecar reader)
 // ---------------------------------------------------------------------------
 
 describe('P2.4 — getLastScipRefresh', () => {
   it('returns null when sidecar is absent', () => {
-    const { reopenCg } = setupForCodeGraph();
+    const { reopenCg } = setupForVBGraph();
     const cg = reopenCg();
     try {
       expect(cg.getLastScipRefresh()).toBeNull();
@@ -179,9 +179,9 @@ describe('P2.4 — getLastScipRefresh', () => {
       durationMs: 4567,
       lastError: null,  // Round-3 sidecar field; null = clean refresh.
     };
-    const { reopenCg } = setupForCodeGraph();
+    const { reopenCg } = setupForVBGraph();
     fs.writeFileSync(
-      path.join(projectRoot, '.codegraph', 'scip-last-refresh.json'),
+      path.join(projectRoot, '.vbgraph', 'scip-last-refresh.json'),
       JSON.stringify(sidecar),
     );
     const cg = reopenCg();
@@ -193,9 +193,9 @@ describe('P2.4 — getLastScipRefresh', () => {
   });
 
   it('returns null on malformed JSON', () => {
-    const { reopenCg } = setupForCodeGraph();
+    const { reopenCg } = setupForVBGraph();
     fs.writeFileSync(
-      path.join(projectRoot, '.codegraph', 'scip-last-refresh.json'),
+      path.join(projectRoot, '.vbgraph', 'scip-last-refresh.json'),
       '{not valid json',
     );
     const cg = reopenCg();
@@ -207,10 +207,10 @@ describe('P2.4 — getLastScipRefresh', () => {
   });
 
   it('returns null when required fields are missing', () => {
-    const { reopenCg } = setupForCodeGraph();
+    const { reopenCg } = setupForVBGraph();
     // Missing `command` and `durationMs`.
     fs.writeFileSync(
-      path.join(projectRoot, '.codegraph', 'scip-last-refresh.json'),
+      path.join(projectRoot, '.vbgraph', 'scip-last-refresh.json'),
       JSON.stringify({
         refreshedAt: '2026-05-24T09:21:33.000Z',
         scipPath: '/abs/p.scip',
@@ -227,12 +227,12 @@ describe('P2.4 — getLastScipRefresh', () => {
 });
 
 // ---------------------------------------------------------------------------
-// CodeGraph.getLanguageTiers (P2.4.3)
+// VBGraph.getLanguageTiers (P2.4.3)
 // ---------------------------------------------------------------------------
 
 describe('P2.4 — getLanguageTiers', () => {
   it('reports tier-1 when SCIP nodes exist for a language', async () => {
-    const { reopenCg } = setupForCodeGraph();
+    const { reopenCg } = setupForVBGraph();
     insertNode({ id: 'a', language: 'csharp', provenance: 'scip' });
     insertNode({ id: 'b', language: 'csharp', provenance: 'tree-sitter' });
 
@@ -249,7 +249,7 @@ describe('P2.4 — getLanguageTiers', () => {
   });
 
   it('reports tier-0 when no SCIP nodes exist', async () => {
-    const { reopenCg } = setupForCodeGraph();
+    const { reopenCg } = setupForVBGraph();
     insertNode({ id: 'a', language: 'vbnet', provenance: 'tree-sitter' });
 
     const cg = reopenCg();
@@ -265,7 +265,7 @@ describe('P2.4 — getLanguageTiers', () => {
   });
 
   it('counts scip-empty-fallback toward treeSitterNodeCount, NOT scipNodeCount', async () => {
-    const { reopenCg } = setupForCodeGraph();
+    const { reopenCg } = setupForVBGraph();
     // Fallback rows are SCIP-coverage-with-empty-doc — they get the
     // `'tree-sitter (scip-empty-fallback)'` provenance. For tier purposes
     // they're syntactic, not compiler — match user mental model.
@@ -288,7 +288,7 @@ describe('P2.4 — getLanguageTiers', () => {
   });
 
   it('sorts languages by file count descending', async () => {
-    const { reopenCg } = setupForCodeGraph();
+    const { reopenCg } = setupForVBGraph();
     insertNode({ id: 'cs1', language: 'csharp', provenance: 'tree-sitter', filePath: 'A.cs' });
     insertNode({ id: 'cs2', language: 'csharp', provenance: 'tree-sitter', filePath: 'B.cs' });
     insertNode({ id: 'cs3', language: 'csharp', provenance: 'tree-sitter', filePath: 'C.cs' });
@@ -306,7 +306,7 @@ describe('P2.4 — getLanguageTiers', () => {
   });
 
   it('returns empty array when no files are tracked', async () => {
-    const { reopenCg } = setupForCodeGraph();
+    const { reopenCg } = setupForVBGraph();
     const cg = reopenCg();
     try {
       const tiers = await cg.getLanguageTiers();
@@ -323,7 +323,7 @@ describe('P2.4 — getLanguageTiers', () => {
 
 describe('P2.4 — formatRelativeTime smoke (via getLastScipRefresh round-trip)', () => {
   it('a just-now sidecar produces parsable relative time', () => {
-    const { reopenCg } = setupForCodeGraph();
+    const { reopenCg } = setupForVBGraph();
     const justNow: ScipLastRefresh = {
       refreshedAt: new Date().toISOString(),
       scipPath: '/x.scip',
@@ -333,7 +333,7 @@ describe('P2.4 — formatRelativeTime smoke (via getLastScipRefresh round-trip)'
       lastError: null,
     };
     fs.writeFileSync(
-      path.join(projectRoot, '.codegraph', 'scip-last-refresh.json'),
+      path.join(projectRoot, '.vbgraph', 'scip-last-refresh.json'),
       JSON.stringify(justNow),
     );
     const cg = reopenCg();

@@ -1,42 +1,42 @@
 #!/usr/bin/env node
 /**
- * CodeGraph CLI
+ * VBGraph CLI
  *
- * Command-line interface for CodeGraph code intelligence.
+ * Command-line interface for VBGraph code intelligence.
  *
  * Usage:
- *   codegraph                    Run interactive installer (when no args)
- *   codegraph install            Run interactive installer
- *   codegraph init [path]        Initialize CodeGraph in a project
- *   codegraph uninit [path]      Remove CodeGraph from a project
- *   codegraph index [path]       Index all files in the project
- *   codegraph sync [path]        Sync changes since last index
- *   codegraph status [path]      Show index status
- *   codegraph query <search>     Search for symbols
- *   codegraph files [options]    Show project file structure
- *   codegraph context <task>     Build context for a task
- *   codegraph affected [files]   Find test files affected by changes
+ *   vbgraph                    Run interactive installer (when no args)
+ *   vbgraph install            Run interactive installer
+ *   vbgraph init [path]        Initialize VBGraph in a project
+ *   vbgraph uninit [path]      Remove VBGraph from a project
+ *   vbgraph index [path]       Index all files in the project
+ *   vbgraph sync [path]        Sync changes since last index
+ *   vbgraph status [path]      Show index status
+ *   vbgraph query <search>     Search for symbols
+ *   vbgraph files [options]    Show project file structure
+ *   vbgraph context <task>     Build context for a task
+ *   vbgraph affected [files]   Find test files affected by changes
  */
 
 import { Command } from 'commander';
 import * as path from 'path';
 import * as fs from 'fs';
-import { getCodeGraphDir, isInitialized } from '../directory';
+import { getVBGraphDir, isInitialized } from '../directory';
 import { createShimmerProgress } from '../ui/shimmer-progress';
 import { getGlyphs } from '../ui/glyphs';
 
 import { buildNode25BlockBanner } from './node-version-check';
 
-// Lazy-load heavy modules (CodeGraph, runInstaller) to keep CLI startup fast.
-async function loadCodeGraph(): Promise<typeof import('../index')> {
+// Lazy-load heavy modules (VBGraph, runInstaller) to keep CLI startup fast.
+async function loadVBGraph(): Promise<typeof import('../index')> {
   try {
     return await import('../index');
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    console.error(`\x1b[31m${getGlyphs().err}\x1b[0m Failed to load CodeGraph modules.`);
+    console.error(`\x1b[31m${getGlyphs().err}\x1b[0m Failed to load VBGraph modules.`);
     console.error(`\n  Node: ${process.version}  Platform: ${process.platform} ${process.arch}`);
     console.error(`\n  Error: ${msg}`);
-    console.error('\n  Try reinstalling with: npm install -g @colbymchenry/codegraph\n');
+    console.error('\n  Try reinstalling with: npm install -g vbgraph\n');
     process.exit(1);
   }
 }
@@ -47,7 +47,7 @@ async function loadCodeGraph(): Promise<typeof import('../index')> {
 const importESM = new Function('specifier', 'return import(specifier)') as
   (specifier: string) => Promise<typeof import('@clack/prompts')>;
 
-// Block CodeGraph on Node.js 25.x — V8's turboshaft WASM JIT has a Zone
+// Block VBGraph on Node.js 25.x — V8's turboshaft WASM JIT has a Zone
 // allocator bug that reliably crashes when compiling tree-sitter
 // grammars (see #54, #81, #140). The previous behaviour was a soft
 // console.warn that scrolls off-screen before the OOM crash 30 seconds
@@ -58,7 +58,7 @@ const nodeVersion = process.versions.node;
 const nodeMajor = parseInt(nodeVersion.split('.')[0] ?? '0', 10);
 if (nodeMajor >= 25) {
   process.stderr.write(buildNode25BlockBanner(nodeVersion) + '\n');
-  if (!process.env.CODEGRAPH_ALLOW_UNSAFE_NODE) {
+  if (!process.env.VBGRAPH_ALLOW_UNSAFE_NODE) {
     process.exit(1);
   }
   // Override active — banner shown for visibility, continuing.
@@ -78,11 +78,11 @@ if (process.argv.length === 2) {
 }
 
 process.on('uncaughtException', (error) => {
-  console.error('[CodeGraph] Uncaught exception:', error);
+  console.error('[VBGraph] Uncaught exception:', error);
 });
 
 process.on('unhandledRejection', (reason) => {
-  console.error('[CodeGraph] Unhandled rejection:', reason);
+  console.error('[VBGraph] Unhandled rejection:', reason);
 });
 
 function main() {
@@ -124,7 +124,7 @@ const chalk = {
 };
 
 program
-  .name('codegraph')
+  .name('vbgraph')
   .description('Code intelligence and knowledge graph for any codebase')
   .version(packageJson.version);
 
@@ -134,19 +134,19 @@ program
 
 /**
  * Resolve project path from argument or current directory
- * Walks up parent directories to find nearest initialized CodeGraph project
- * (must have .codegraph/codegraph.db, not just .codegraph/lessons.db)
+ * Walks up parent directories to find nearest initialized VBGraph project
+ * (must have .vbgraph/vbgraph.db, not just .vbgraph/lessons.db)
  */
 function resolveProjectPath(pathArg?: string): string {
   const absolutePath = path.resolve(pathArg || process.cwd());
 
-  // If exact path is initialized (has codegraph.db), use it
+  // If exact path is initialized (has vbgraph.db), use it
   if (isInitialized(absolutePath)) {
     return absolutePath;
   }
 
-  // Walk up to find nearest parent with CodeGraph initialized
-  // Note: findNearestCodeGraphRoot finds any .codegraph folder, but we need one with codegraph.db
+  // Walk up to find nearest parent with VBGraph initialized
+  // Note: findNearestVBGraphRoot finds any .vbgraph folder, but we need one with vbgraph.db
   let current = absolutePath;
   const root = path.parse(current).root;
 
@@ -346,14 +346,14 @@ function printIndexResult(clack: typeof import('@clack/prompts'), result: IndexR
 
     if (projectPath) {
       writeErrorLog(projectPath, result.errors);
-      clack.log.info('See .codegraph/errors.log for details');
+      clack.log.info('See .vbgraph/errors.log for details');
     }
 
     if (result.filesIndexed > 0) {
       clack.log.info(`The index is fully usable ${getGlyphs().dash} only the failed files are missing.`);
     }
   } else if (projectPath) {
-    const logPath = path.join(projectPath, '.codegraph', 'errors.log');
+    const logPath = path.join(projectPath, '.vbgraph', 'errors.log');
     if (fs.existsSync(logPath)) {
       fs.unlinkSync(logPath);
     }
@@ -361,7 +361,7 @@ function printIndexResult(clack: typeof import('@clack/prompts'), result: IndexR
 }
 
 /**
- * After a Tier 0 (`codegraph index` with no SCIP flags) run, tell the user
+ * After a Tier 0 (`vbgraph index` with no SCIP flags) run, tell the user
  * which uninstalled SCIP indexers would lift the repo's languages to
  * compiler-grade precision. Best-effort — never fails the index.
  */
@@ -377,7 +377,7 @@ async function printScipUpgradeHints(
     const languagesInRepo = new Set(cg.getFiles().map((f) => f.language));
     const hints = formatUninstalledIndexerHints(detected, languagesInRepo);
     if (hints.length > 0) {
-      const body = [...hints, '', 'Then run: codegraph index --scip-auto'].join('\n');
+      const body = [...hints, '', 'Then run: vbgraph index --scip-auto'].join('\n');
       clack.note(body, 'Compiler-grade precision available');
     }
   } catch {
@@ -386,10 +386,10 @@ async function printScipUpgradeHints(
 }
 
 /**
- * Write detailed error log to .codegraph/errors.log
+ * Write detailed error log to .vbgraph/errors.log
  */
 function writeErrorLog(projectPath: string, errors: Array<{ message: string; filePath?: string; severity: string; code?: string }>): void {
-  const cgDir = path.join(projectPath, '.codegraph');
+  const cgDir = path.join(projectPath, '.vbgraph');
   if (!fs.existsSync(cgDir)) return;
 
   const logPath = path.join(cgDir, 'errors.log');
@@ -413,7 +413,7 @@ function writeErrorLog(projectPath: string, errors: Array<{ message: string; fil
   }
 
   const lines: string[] = [
-    `CodeGraph Error Log - ${new Date().toISOString()}`,
+    `VBGraph Error Log - ${new Date().toISOString()}`,
     `${errorsByFile.size} files with errors`,
     '',
   ];
@@ -436,23 +436,23 @@ function writeErrorLog(projectPath: string, errors: Array<{ message: string; fil
 // =============================================================================
 
 /**
- * codegraph init [path]
+ * vbgraph init [path]
  */
 program
   .command('init [path]')
-  .description('Initialize CodeGraph in a project directory')
+  .description('Initialize VBGraph in a project directory')
   .option('-i, --index', 'Run initial indexing after initialization')
   .option('-v, --verbose', 'Show detailed worker lifecycle and memory info')
   .action(async (pathArg: string | undefined, options: { index?: boolean; verbose?: boolean }) => {
     const projectPath = path.resolve(pathArg || process.cwd());
     const clack = await importESM('@clack/prompts');
 
-    clack.intro('Initializing CodeGraph');
+    clack.intro('Initializing VBGraph');
 
     try {
       if (isInitialized(projectPath)) {
         clack.log.warn(`Already initialized in ${projectPath}`);
-        clack.log.info('Use "codegraph index" to re-index or "codegraph sync" to update');
+        clack.log.info('Use "vbgraph index" to re-index or "vbgraph sync" to update');
         // Re-run agent surface wiring so re-running `init` is the
         // documented way to recover a project that's missing its
         // Cursor rules file (or future per-agent project surfaces).
@@ -466,13 +466,13 @@ program
         return;
       }
 
-      const { default: CodeGraph } = await loadCodeGraph();
-      const cg = await CodeGraph.init(projectPath, { index: false });
+      const { default: VBGraph } = await loadVBGraph();
+      const cg = await VBGraph.init(projectPath, { index: false });
       clack.log.success(`Initialized in ${projectPath}`);
 
       // Bootstrap project-local surfaces for any agent that's
-      // configured globally (Cursor needs ./.cursor/rules/codegraph.mdc
-      // to actually prefer codegraph over native grep). Silent when
+      // configured globally (Cursor needs ./.cursor/rules/vbgraph.mdc
+      // to actually prefer vbgraph over native grep). Silent when
       // there's nothing to write.
       try {
         const { wireProjectSurfacesForGlobalAgents } = await import('../installer');
@@ -503,7 +503,7 @@ program
 
         printIndexResult(clack, result, projectPath);
       } else {
-        clack.log.info('Run "codegraph index" to index the project');
+        clack.log.info('Run "vbgraph index" to index the project');
       }
 
       clack.outro('Done');
@@ -515,18 +515,18 @@ program
   });
 
 /**
- * codegraph uninit [path]
+ * vbgraph uninit [path]
  */
 program
   .command('uninit [path]')
-  .description('Remove CodeGraph from a project (deletes .codegraph/ directory)')
+  .description('Remove VBGraph from a project (deletes .vbgraph/ directory)')
   .option('-f, --force', 'Skip confirmation prompt')
   .action(async (pathArg: string | undefined, options: { force?: boolean }) => {
     const projectPath = resolveProjectPath(pathArg);
 
     try {
       if (!isInitialized(projectPath)) {
-        warn(`CodeGraph is not initialized in ${projectPath}`);
+        warn(`VBGraph is not initialized in ${projectPath}`);
         return;
       }
 
@@ -536,7 +536,7 @@ program
         const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
         const answer = await new Promise<string>((resolve) => {
           rl.question(
-            chalk.yellow(`${getGlyphs().warn} This will permanently delete all CodeGraph data. Continue? (y/N) `),
+            chalk.yellow(`${getGlyphs().warn} This will permanently delete all VBGraph data. Continue? (y/N) `),
             resolve
           );
         });
@@ -548,11 +548,11 @@ program
         }
       }
 
-      const { default: CodeGraph } = await loadCodeGraph();
-      const cg = CodeGraph.openSync(projectPath);
+      const { default: VBGraph } = await loadVBGraph();
+      const cg = VBGraph.openSync(projectPath);
       cg.uninitialize();
 
-      success(`Removed CodeGraph from ${projectPath}`);
+      success(`Removed VBGraph from ${projectPath}`);
     } catch (err) {
       error(`Failed to uninitialize: ${err instanceof Error ? err.message : String(err)}`);
       process.exit(1);
@@ -560,7 +560,7 @@ program
   });
 
 /**
- * codegraph index [path]
+ * vbgraph index [path]
  */
 program
   .command('index [path]')
@@ -605,13 +605,13 @@ program
 
     try {
       if (!isInitialized(projectPath)) {
-        error(`CodeGraph not initialized in ${projectPath}`);
-        info('Run "codegraph init" first');
+        error(`VBGraph not initialized in ${projectPath}`);
+        info('Run "vbgraph init" first');
         process.exit(1);
       }
 
-      const { default: CodeGraph } = await loadCodeGraph();
-      const cg = await CodeGraph.open(projectPath);
+      const { default: VBGraph } = await loadVBGraph();
+      const cg = await VBGraph.open(projectPath);
 
       if (options.quiet) {
         // Quiet mode: no UI, just run
@@ -669,7 +669,7 @@ program
   });
 
 /**
- * codegraph sync [path]
+ * vbgraph sync [path]
  */
 program
   .command('sync [path]')
@@ -681,13 +681,13 @@ program
     try {
       if (!isInitialized(projectPath)) {
         if (!options.quiet) {
-          error(`CodeGraph not initialized in ${projectPath}`);
+          error(`VBGraph not initialized in ${projectPath}`);
         }
         process.exit(1);
       }
 
-      const { default: CodeGraph } = await loadCodeGraph();
-      const cg = await CodeGraph.open(projectPath);
+      const { default: VBGraph } = await loadVBGraph();
+      const cg = await VBGraph.open(projectPath);
 
       if (options.quiet) {
         await cg.sync();
@@ -696,7 +696,7 @@ program
       }
 
       const clack = await importESM('@clack/prompts');
-      clack.intro('Syncing CodeGraph');
+      clack.intro('Syncing VBGraph');
 
       process.stdout.write(`${colors.dim}${getGlyphs().rail}${colors.reset}\n`);
       const progress = createShimmerProgress();
@@ -731,10 +731,10 @@ program
   });
 
 /**
- * codegraph scip-refresh [path]
+ * vbgraph scip-refresh [path]
  *
  * P2.3 — spawn the configured SCIP indexer and re-ingest its output.
- * Reuses P0 STAGE B (scoped delete + re-insert) via `CodeGraph.refreshScip`.
+ * Reuses P0 STAGE B (scoped delete + re-insert) via `VBGraph.refreshScip`.
  * After ingest, runs the narrow post-ingest assertion: each refreshed
  * file must have zero `provenance = 'tree-sitter'` rows (fallback rows
  * legitimately re-created by STAGE E are excluded).
@@ -754,13 +754,13 @@ program
     const projectPath = resolveProjectPath(pathArg);
     try {
       if (!isInitialized(projectPath)) {
-        error(`CodeGraph not initialized in ${projectPath}`);
-        info('Run "codegraph init" first');
+        error(`VBGraph not initialized in ${projectPath}`);
+        info('Run "vbgraph init" first');
         process.exit(1);
       }
 
-      const { default: CodeGraph } = await loadCodeGraph();
-      const cg = await CodeGraph.open(projectPath);
+      const { default: VBGraph } = await loadVBGraph();
+      const cg = await VBGraph.open(projectPath);
       try {
         if (!options.quiet) {
           info('Refreshing SCIP index…');
@@ -783,8 +783,8 @@ program
           //
           // Backup channels (defense-in-depth):
           //   (a) refreshScip also appends `result.error` to its per-run
-          //       log file (.codegraph/logs/scip-refresh-<ts>.log).
-          //   (b) The sidecar (.codegraph/scip-last-refresh.json) now
+          //       log file (.vbgraph/logs/scip-refresh-<ts>.log).
+          //   (b) The sidecar (.vbgraph/scip-last-refresh.json) now
           //       carries `lastError` so users can `cat` it.
           if (result.error) {
             const warnLine = `${getGlyphs().warn} scip-refresh completed with derived-data issues: ${result.error}`;
@@ -827,7 +827,7 @@ program
   });
 
 /**
- * codegraph status [path]
+ * vbgraph status [path]
  */
 program
   .command('status [path]')
@@ -842,15 +842,15 @@ program
           console.log(JSON.stringify({ initialized: false, projectPath }));
           return;
         }
-        console.log(chalk.bold('\nCodeGraph Status\n'));
+        console.log(chalk.bold('\nVBGraph Status\n'));
         info(`Project: ${projectPath}`);
         warn('Not initialized');
-        info('Run "codegraph init" to initialize');
+        info('Run "vbgraph init" to initialize');
         return;
       }
 
-      const { default: CodeGraph } = await loadCodeGraph();
-      const cg = await CodeGraph.open(projectPath);
+      const { default: VBGraph } = await loadVBGraph();
+      const cg = await VBGraph.open(projectPath);
       const stats = cg.getStats();
       const rawStats = cg.getStatsIncludingStale();          // P2.4.1
       const stale = cg.getStaleSummary();                    // P2.4.1
@@ -902,7 +902,7 @@ program
         return;
       }
 
-      console.log(chalk.bold('\nCodeGraph Status\n'));
+      console.log(chalk.bold('\nVBGraph Status\n'));
 
       // Project info
       console.log(chalk.cyan('Project:'), projectPath);
@@ -1002,7 +1002,7 @@ program
         }
       }
       if (needsRefresh) {
-        info('Run "codegraph scip-refresh" to restore SCIP precision');
+        info('Run "vbgraph scip-refresh" to restore SCIP precision');
       }
       console.log();
 
@@ -1051,7 +1051,7 @@ program
         if (changes.removed.length > 0) {
           console.log(`  Removed:   ${changes.removed.length} files`);
         }
-        info('Run "codegraph sync" to update the index');
+        info('Run "vbgraph sync" to update the index');
       } else {
         success('Index is up to date');
       }
@@ -1065,7 +1065,7 @@ program
   });
 
 /**
- * codegraph query <search>
+ * vbgraph query <search>
  */
 program
   .command('query <search>')
@@ -1079,12 +1079,12 @@ program
 
     try {
       if (!isInitialized(projectPath)) {
-        error(`CodeGraph not initialized in ${projectPath}`);
+        error(`VBGraph not initialized in ${projectPath}`);
         process.exit(1);
       }
 
-      const { default: CodeGraph } = await loadCodeGraph();
-      const cg = await CodeGraph.open(projectPath);
+      const { default: VBGraph } = await loadVBGraph();
+      const cg = await VBGraph.open(projectPath);
 
       const limit = parseInt(options.limit || '10', 10);
       const results = cg.searchNodes(search, {
@@ -1127,7 +1127,7 @@ program
   });
 
 /**
- * codegraph files [path]
+ * vbgraph files [path]
  */
 program
   .command('files')
@@ -1152,16 +1152,16 @@ program
 
     try {
       if (!isInitialized(projectPath)) {
-        error(`CodeGraph not initialized in ${projectPath}`);
+        error(`VBGraph not initialized in ${projectPath}`);
         process.exit(1);
       }
 
-      const { default: CodeGraph } = await loadCodeGraph();
-      const cg = await CodeGraph.open(projectPath);
+      const { default: VBGraph } = await loadVBGraph();
+      const cg = await VBGraph.open(projectPath);
       let files = cg.getFiles();
 
       if (files.length === 0) {
-        info('No files indexed. Run "codegraph index" first.');
+        info('No files indexed. Run "vbgraph index" first.');
         cg.destroy();
         return;
       }
@@ -1334,7 +1334,7 @@ function printFileTree(
 }
 
 /**
- * codegraph context <task>
+ * vbgraph context <task>
  */
 program
   .command('context <task>')
@@ -1355,12 +1355,12 @@ program
 
     try {
       if (!isInitialized(projectPath)) {
-        error(`CodeGraph not initialized in ${projectPath}`);
+        error(`VBGraph not initialized in ${projectPath}`);
         process.exit(1);
       }
 
-      const { default: CodeGraph } = await loadCodeGraph();
-      const cg = await CodeGraph.open(projectPath);
+      const { default: VBGraph } = await loadVBGraph();
+      const cg = await VBGraph.open(projectPath);
 
       const context = await cg.buildContext(task, {
         maxNodes: parseInt(options.maxNodes || '50', 10),
@@ -1380,11 +1380,11 @@ program
   });
 
 /**
- * codegraph serve
+ * vbgraph serve
  */
 program
   .command('serve')
-  .description('Start CodeGraph as an MCP server for AI assistants')
+  .description('Start VBGraph as an MCP server for AI assistants')
   .option('-p, --path <path>', 'Project path (optional for MCP mode, uses rootUri from client)')
   .option('--mcp', 'Run as MCP server (stdio transport)')
   .action(async (options: { path?: string; mcp?: boolean }) => {
@@ -1400,28 +1400,28 @@ program
       } else {
         // Default: show info about MCP mode.
         // Use stderr so stdout stays clean for any piped/stdio usage.
-        console.error(chalk.bold('\nCodeGraph MCP Server\n'));
+        console.error(chalk.bold('\nVBGraph MCP Server\n'));
         console.error(chalk.blue(getGlyphs().info) + ' Use --mcp flag to start the MCP server');
         console.error('\nTo use with Claude Code, add to your MCP configuration:');
         console.error(chalk.dim(`
 {
   "mcpServers": {
-    "codegraph": {
-      "command": "codegraph",
+    "vbgraph": {
+      "command": "vbgraph",
       "args": ["serve", "--mcp"]
     }
   }
 }
 `));
         console.error('Available tools:');
-        console.error(chalk.cyan('  codegraph_search') + '    - Search for code symbols');
-        console.error(chalk.cyan('  codegraph_context') + '   - Build context for a task');
-        console.error(chalk.cyan('  codegraph_callers') + '   - Find callers of a symbol');
-        console.error(chalk.cyan('  codegraph_callees') + '   - Find what a symbol calls');
-        console.error(chalk.cyan('  codegraph_impact') + '    - Analyze impact of changes');
-        console.error(chalk.cyan('  codegraph_node') + '      - Get symbol details');
-        console.error(chalk.cyan('  codegraph_files') + '     - Get project file structure');
-        console.error(chalk.cyan('  codegraph_status') + '    - Get index status');
+        console.error(chalk.cyan('  vbgraph_search') + '    - Search for code symbols');
+        console.error(chalk.cyan('  vbgraph_context') + '   - Build context for a task');
+        console.error(chalk.cyan('  vbgraph_callers') + '   - Find callers of a symbol');
+        console.error(chalk.cyan('  vbgraph_callees') + '   - Find what a symbol calls');
+        console.error(chalk.cyan('  vbgraph_impact') + '    - Analyze impact of changes');
+        console.error(chalk.cyan('  vbgraph_node') + '      - Get symbol details');
+        console.error(chalk.cyan('  vbgraph_files') + '     - Get project file structure');
+        console.error(chalk.cyan('  vbgraph_status') + '    - Get index status');
       }
     } catch (err) {
       error(`Failed to start server: ${err instanceof Error ? err.message : String(err)}`);
@@ -1430,7 +1430,7 @@ program
   });
 
 /**
- * codegraph unlock [path]
+ * vbgraph unlock [path]
  */
 program
   .command('unlock [path]')
@@ -1440,11 +1440,11 @@ program
 
     try {
       if (!isInitialized(projectPath)) {
-        error(`CodeGraph not initialized in ${projectPath}`);
+        error(`VBGraph not initialized in ${projectPath}`);
         return;
       }
 
-      const lockPath = path.join(getCodeGraphDir(projectPath), 'codegraph.lock');
+      const lockPath = path.join(getVBGraphDir(projectPath), 'vbgraph.lock');
 
       if (!fs.existsSync(lockPath)) {
         info(`No lock file found ${getGlyphs().dash} nothing to do`);
@@ -1460,14 +1460,14 @@ program
   });
 
 /**
- * codegraph affected [files...]
+ * vbgraph affected [files...]
  *
  * Find test files affected by the given source files.
  * Traces dependency edges transitively to find test files that depend on changed code.
  *
  * Usage:
- *   git diff --name-only | codegraph affected --stdin
- *   codegraph affected src/lib/components/Editor.svelte src/routes/+page.svelte
+ *   git diff --name-only | vbgraph affected --stdin
+ *   vbgraph affected src/lib/components/Editor.svelte src/routes/+page.svelte
  */
 program
   .command('affected [files...]')
@@ -1483,7 +1483,7 @@ program
 
     try {
       if (!isInitialized(projectPath)) {
-        error(`CodeGraph not initialized in ${projectPath}`);
+        error(`VBGraph not initialized in ${projectPath}`);
         process.exit(1);
       }
 
@@ -1501,8 +1501,8 @@ program
         process.exit(0);
       }
 
-      const { default: CodeGraph } = await loadCodeGraph();
-      const cg = await CodeGraph.open(projectPath);
+      const { default: VBGraph } = await loadVBGraph();
+      const cg = await VBGraph.open(projectPath);
       const maxDepth = parseInt(options.depth || '5', 10);
 
       // Common test file patterns
@@ -1598,7 +1598,7 @@ program
   });
 
 /**
- * codegraph parity --fixture <path>
+ * vbgraph parity --fixture <path>
  */
 program
   .command('parity')
@@ -1680,11 +1680,11 @@ program
   });
 
 /**
- * codegraph install
+ * vbgraph install
  */
 program
   .command('install')
-  .description('Install codegraph MCP server into one or more agents (Claude Code, Cursor, Codex CLI, opencode)')
+  .description('Install vbgraph MCP server into one or more agents (Claude Code, Cursor, Codex CLI, opencode)')
   .option('-t, --target <ids>', 'Target agent(s): comma-separated ids, or "auto"|"all"|"none". Default: prompt')
   .option('-l, --location <where>', 'Install location: "global" or "local". Default: prompt')
   .option('-y, --yes', 'Non-interactive: defaults to --location=global --target=auto, auto-allow on')

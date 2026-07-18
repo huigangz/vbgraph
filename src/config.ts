@@ -1,13 +1,13 @@
 /**
  * Configuration Management
  *
- * Load, save, and validate CodeGraph configuration.
+ * Load, save, and validate VBGraph configuration.
  */
 
 import * as fs from 'fs';
 import * as path from 'path';
 import picomatch from 'picomatch';
-import { CodeGraphConfig, DEFAULT_CONFIG, LANGUAGES, NodeKind } from './types';
+import { VBGraphConfig, DEFAULT_CONFIG, LANGUAGES, NodeKind } from './types';
 import { normalizePath } from './utils';
 
 /**
@@ -19,7 +19,7 @@ export const CONFIG_FILENAME = 'config.json';
  * Get the config file path for a project
  */
 export function getConfigPath(projectRoot: string): string {
-  return path.join(projectRoot, '.codegraph', CONFIG_FILENAME);
+  return path.join(projectRoot, '.vbgraph', CONFIG_FILENAME);
 }
 
 /**
@@ -50,7 +50,7 @@ function isSafeRegex(pattern: string): boolean {
 /**
  * Validate a configuration object
  */
-export function validateConfig(config: unknown): config is CodeGraphConfig {
+export function validateConfig(config: unknown): config is VBGraphConfig {
   if (typeof config !== 'object' || config === null) {
     return false;
   }
@@ -105,9 +105,9 @@ export function validateConfig(config: unknown): config is CodeGraphConfig {
  * Merge configuration with defaults
  */
 function mergeConfig(
-  defaults: CodeGraphConfig,
-  overrides: Partial<CodeGraphConfig>
-): CodeGraphConfig {
+  defaults: VBGraphConfig,
+  overrides: Partial<VBGraphConfig>
+): VBGraphConfig {
   return {
     version: overrides.version ?? defaults.version,
     rootDir: overrides.rootDir ?? defaults.rootDir,
@@ -120,7 +120,7 @@ function mergeConfig(
     trackCallSites: overrides.trackCallSites ?? defaults.trackCallSites,
     customPatterns: overrides.customPatterns ?? defaults.customPatterns,
     // SCIP configuration — carried through so project-level SCIP defaults in
-    // .codegraph/config.json are not silently dropped on load.
+    // .vbgraph/config.json are not silently dropped on load.
     scipSources: overrides.scipSources ?? defaults.scipSources,
     emptyFallbackThresholdBytes:
       overrides.emptyFallbackThresholdBytes ?? defaults.emptyFallbackThresholdBytes,
@@ -132,7 +132,7 @@ function mergeConfig(
 /**
  * Load configuration from a project
  */
-export function loadConfig(projectRoot: string): CodeGraphConfig {
+export function loadConfig(projectRoot: string): VBGraphConfig {
   const configPath = getConfigPath(projectRoot);
 
   if (!fs.existsSync(configPath)) {
@@ -148,7 +148,7 @@ export function loadConfig(projectRoot: string): CodeGraphConfig {
     const parsed = JSON.parse(content) as unknown;
 
     // Merge with defaults to ensure all fields are present
-    const merged = mergeConfig(DEFAULT_CONFIG, parsed as Partial<CodeGraphConfig>);
+    const merged = mergeConfig(DEFAULT_CONFIG, parsed as Partial<VBGraphConfig>);
     merged.rootDir = projectRoot; // Always use actual project root
 
     if (!validateConfig(merged)) {
@@ -167,7 +167,7 @@ export function loadConfig(projectRoot: string): CodeGraphConfig {
 /**
  * Save configuration to a project
  */
-export function saveConfig(projectRoot: string, config: CodeGraphConfig): void {
+export function saveConfig(projectRoot: string, config: VBGraphConfig): void {
   const configPath = getConfigPath(projectRoot);
   const dir = path.dirname(configPath);
 
@@ -178,7 +178,7 @@ export function saveConfig(projectRoot: string, config: CodeGraphConfig): void {
 
   // Create a copy without rootDir (it's always derived from project path)
   const toSave = { ...config };
-  delete (toSave as Partial<CodeGraphConfig>).rootDir;
+  delete (toSave as Partial<VBGraphConfig>).rootDir;
 
   const content = JSON.stringify(toSave, null, 2);
 
@@ -191,7 +191,7 @@ export function saveConfig(projectRoot: string, config: CodeGraphConfig): void {
 /**
  * Create default configuration for a new project
  */
-export function createDefaultConfig(projectRoot: string): CodeGraphConfig {
+export function createDefaultConfig(projectRoot: string): VBGraphConfig {
   return {
     ...DEFAULT_CONFIG,
     rootDir: projectRoot,
@@ -203,8 +203,8 @@ export function createDefaultConfig(projectRoot: string): CodeGraphConfig {
  */
 export function updateConfig(
   projectRoot: string,
-  updates: Partial<CodeGraphConfig>
-): CodeGraphConfig {
+  updates: Partial<VBGraphConfig>
+): VBGraphConfig {
   const current = loadConfig(projectRoot);
   const updated = mergeConfig(current, updates);
   updated.rootDir = projectRoot;
@@ -215,7 +215,7 @@ export function updateConfig(
 /**
  * Add patterns to include list
  */
-export function addIncludePatterns(projectRoot: string, patterns: string[]): CodeGraphConfig {
+export function addIncludePatterns(projectRoot: string, patterns: string[]): VBGraphConfig {
   const config = loadConfig(projectRoot);
   const newPatterns = patterns.filter((p) => !config.include.includes(p));
   config.include = [...config.include, ...newPatterns];
@@ -226,7 +226,7 @@ export function addIncludePatterns(projectRoot: string, patterns: string[]): Cod
 /**
  * Add patterns to exclude list
  */
-export function addExcludePatterns(projectRoot: string, patterns: string[]): CodeGraphConfig {
+export function addExcludePatterns(projectRoot: string, patterns: string[]): VBGraphConfig {
   const config = loadConfig(projectRoot);
   const newPatterns = patterns.filter((p) => !config.exclude.includes(p));
   config.exclude = [...config.exclude, ...newPatterns];
@@ -242,7 +242,7 @@ export function addCustomPattern(
   name: string,
   pattern: string,
   kind: NodeKind
-): CodeGraphConfig {
+): VBGraphConfig {
   const config = loadConfig(projectRoot);
 
   if (!config.customPatterns) {
@@ -265,7 +265,7 @@ export function addCustomPattern(
 /**
  * Check if a file path matches the include/exclude patterns
  */
-export function shouldIncludeFile(filePath: string, config: CodeGraphConfig): boolean {
+export function shouldIncludeFile(filePath: string, config: VBGraphConfig): boolean {
   // Normalize to forward slashes so Windows backslash paths match glob patterns
   filePath = normalizePath(filePath);
 

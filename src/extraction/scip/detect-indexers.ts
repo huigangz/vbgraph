@@ -2,7 +2,7 @@
  * SCIP indexer toolchain detection.
  *
  * Probes PATH for installed Sourcegraph SCIP indexers so that
- * `codegraph index --scip-auto` can enable compiler-grade indexing only for
+ * `vbgraph index --scip-auto` can enable compiler-grade indexing only for
  * languages whose toolchain is actually present. Detection never throws and
  * never excludes an indexer based on its version probe — version is purely
  * informational (see the invariant on `detectInstalledScipIndexers`).
@@ -46,7 +46,7 @@ export interface DetectedIndexer extends ScipIndexerSpec {
 }
 
 /**
- * The known SCIP indexers CodeGraph can auto-detect. Hardcoded by design;
+ * The known SCIP indexers VBGraph can auto-detect. Hardcoded by design;
  * a `customScipIndexers` config extension point is deferred (see plan
  * "Out of scope").
  */
@@ -102,7 +102,7 @@ const VERSION_PROBE_TIMEOUT_MS = 2000;
 const VERSION_RE = /\d+\.\d+(?:\.\d+)?(?:[-+][0-9A-Za-z.-]+)?/;
 
 /**
- * In-memory cache for the lifetime of a single `codegraph` process. Toolchain
+ * In-memory cache for the lifetime of a single `vbgraph` process. Toolchain
  * state can change between invocations, so this is deliberately not persisted.
  */
 let detectionCache: DetectedIndexer[] | null = null;

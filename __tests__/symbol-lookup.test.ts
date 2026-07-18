@@ -2,7 +2,7 @@
  * Module-qualified symbol lookup (`stage_apply::run`, `Session.request`,
  * `configurator/stage_apply`).
  *
- * Pinned because the lookup vocabulary is what makes codegraph useful
+ * Pinned because the lookup vocabulary is what makes vbgraph useful
  * in workspaces with same-named symbols across modules — Rust
  * sub-pipelines, Python `__init__.py` packages, Java packages, etc.
  * See #173 for the original report: a `run` function in
@@ -36,7 +36,7 @@ function hasSqliteBindings(): boolean {
 const HAS_SQLITE = hasSqliteBindings();
 
 function tmpRoot(): string {
-  return fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-symbol-lookup-'));
+  return fs.mkdtempSync(path.join(os.tmpdir(), 'vbgraph-symbol-lookup-'));
 }
 
 function rmTree(dir: string): void {
@@ -80,9 +80,9 @@ describe.skipIf(!HAS_SQLITE)('matchesSymbol — module-qualified lookups (#173)'
 
   beforeEach(async () => {
     projectRoot = await buildRustWorkspace();
-    const CodeGraph = (await import('../src/index')).default;
+    const VBGraph = (await import('../src/index')).default;
     const { ToolHandler } = await import('../src/mcp/tools');
-    cg = CodeGraph.initSync(projectRoot, {
+    cg = VBGraph.initSync(projectRoot, {
       config: { include: ['**/*.rs'], exclude: [] },
     });
     await cg.indexAll();
@@ -169,9 +169,9 @@ describe.skipIf(!HAS_SQLITE)('matchesSymbol — dotted lookups (regression for #
       `export class Session {\n  request(): void {}\n}\nexport function request(): void {}\n`
     );
 
-    const CodeGraph = (await import('../src/index')).default;
+    const VBGraph = (await import('../src/index')).default;
     const { ToolHandler } = await import('../src/mcp/tools');
-    cg = CodeGraph.initSync(projectRoot, {
+    cg = VBGraph.initSync(projectRoot, {
       config: { include: ['src/**/*.ts'], exclude: [] },
     });
     await cg.indexAll();

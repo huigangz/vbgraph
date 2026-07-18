@@ -8,7 +8,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { CodeGraph } from '../src';
+import { VBGraph } from '../src';
 import { Node, UnresolvedReference } from '../src/types';
 import { ReferenceResolver, createResolver, ResolutionContext } from '../src/resolution';
 import { matchReference } from '../src/resolution/name-matcher';
@@ -19,11 +19,11 @@ import { DatabaseConnection } from '../src/db';
 
 describe('Resolution Module', () => {
   let tempDir: string;
-  let cg: CodeGraph;
+  let cg: VBGraph;
 
   beforeEach(() => {
     // Create temp directory
-    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-resolution-test-'));
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vbgraph-resolution-test-'));
   });
 
   afterEach(() => {
@@ -538,7 +538,7 @@ from ..services import auth_service
   });
 
   describe('Integration Tests', () => {
-    it('should create resolver from CodeGraph instance', async () => {
+    it('should create resolver from VBGraph instance', async () => {
       // Create a simple TypeScript project
       fs.writeFileSync(
         path.join(tempDir, 'package.json'),
@@ -572,7 +572,7 @@ function processDate(input: string): string {
       );
 
       // Initialize and index
-      cg = await CodeGraph.init(tempDir, { index: true });
+      cg = await VBGraph.init(tempDir, { index: true });
 
       // Check that resolver detected React framework
       const frameworks = cg.getDetectedFrameworks();
@@ -605,7 +605,7 @@ function main(): void {
 }`
       );
 
-      cg = await CodeGraph.init(tempDir, { index: true });
+      cg = await VBGraph.init(tempDir, { index: true });
 
       // Run reference resolution
       const result = cg.resolveReferences();
@@ -634,7 +634,7 @@ def bootstrap():
 `
       );
 
-      cg = await CodeGraph.init(tempDir, { index: true });
+      cg = await VBGraph.init(tempDir, { index: true });
       cg.resolveReferences();
 
       const bootstrap = cg
@@ -748,7 +748,7 @@ def bootstrap():
         })
       );
 
-      cg = await CodeGraph.init(tempDir, { index: true });
+      cg = await VBGraph.init(tempDir, { index: true });
       cg.resolveReferences();
 
       // The two pickMe nodes live in different files. The aliased
@@ -780,7 +780,7 @@ def bootstrap():
         `import { aFn } from './a';\nexport function bFn(): void { aFn(); }\n`
       );
 
-      cg = await CodeGraph.init(tempDir, { index: true });
+      cg = await VBGraph.init(tempDir, { index: true });
       // No tsconfig present — index should still complete and the
       // relative-import-based call edge should be created.
       const aFn = cg.getNodesByKind('function').find((n) => n.name === 'aFn');
@@ -813,7 +813,7 @@ def bootstrap():
         `import { signIn } from './all';\nexport function go(): void { signIn(); }\n`
       );
 
-      cg = await CodeGraph.init(tempDir, { index: true });
+      cg = await VBGraph.init(tempDir, { index: true });
       cg.resolveReferences();
 
       const signInNode = cg
@@ -842,7 +842,7 @@ def bootstrap():
         `import { login } from './index';\nexport function go(): void { login(); }\n`
       );
 
-      cg = await CodeGraph.init(tempDir, { index: true });
+      cg = await VBGraph.init(tempDir, { index: true });
       cg.resolveReferences();
 
       const signInNode = cg

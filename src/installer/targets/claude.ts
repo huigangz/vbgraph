@@ -25,7 +25,7 @@ import {
 } from './types';
 import {
   atomicWriteFileSync,
-  getCodeGraphPermissions,
+  getVBGraphPermissions,
   getMcpServerConfig,
   jsonDeepEqual,
   readJsonFile,
@@ -34,8 +34,8 @@ import {
   writeJsonFile,
 } from './shared';
 import {
-  CODEGRAPH_SECTION_END,
-  CODEGRAPH_SECTION_START,
+  VBGRAPH_SECTION_END,
+  VBGRAPH_SECTION_START,
   INSTRUCTIONS_TEMPLATE,
 } from '../instructions-template';
 
@@ -68,7 +68,7 @@ class ClaudeCodeTarget implements AgentTarget {
   detect(loc: Location): DetectionResult {
     const mcpPath = mcpJsonPath(loc);
     const config = readJsonFile(mcpPath);
-    const alreadyConfigured = !!config.mcpServers?.codegraph;
+    const alreadyConfigured = !!config.mcpServers?.vbgraph;
     // For "installed" we infer from the existence of either the dir
     // (global) or the project marker file (local). Cheap and avoids
     // shelling out to `claude --version`.
@@ -101,8 +101,8 @@ class ClaudeCodeTarget implements AgentTarget {
     // 1. MCP server entry
     const mcpPath = mcpJsonPath(loc);
     const config = readJsonFile(mcpPath);
-    if (config.mcpServers?.codegraph) {
-      delete config.mcpServers.codegraph;
+    if (config.mcpServers?.vbgraph) {
+      delete config.mcpServers.vbgraph;
       if (Object.keys(config.mcpServers).length === 0) {
         delete config.mcpServers;
       }
@@ -118,7 +118,7 @@ class ClaudeCodeTarget implements AgentTarget {
     if (Array.isArray(settings.permissions?.allow)) {
       const before = settings.permissions.allow.length;
       settings.permissions.allow = settings.permissions.allow.filter(
-        (p: string) => !p.startsWith('mcp__codegraph__'),
+        (p: string) => !p.startsWith('mcp__vbgraph__'),
       );
       if (settings.permissions.allow.length !== before) {
         if (settings.permissions.allow.length === 0) {
@@ -138,7 +138,7 @@ class ClaudeCodeTarget implements AgentTarget {
 
     // 3. Instructions
     const instr = instructionsPath(loc);
-    const action = removeMarkedSection(instr, CODEGRAPH_SECTION_START, CODEGRAPH_SECTION_END);
+    const action = removeMarkedSection(instr, VBGRAPH_SECTION_START, VBGRAPH_SECTION_END);
     files.push({ path: instr, action });
 
     return { files };
@@ -146,7 +146,7 @@ class ClaudeCodeTarget implements AgentTarget {
 
   printConfig(loc: Location): string {
     const target = mcpJsonPath(loc);
-    const snippet = JSON.stringify({ mcpServers: { codegraph: getMcpServerConfig() } }, null, 2);
+    const snippet = JSON.stringify({ mcpServers: { vbgraph: getMcpServerConfig() } }, null, 2);
     return `# Add to ${target}\n\n${snippet}\n`;
   }
 
@@ -165,7 +165,7 @@ class ClaudeCodeTarget implements AgentTarget {
 export function writeMcpEntry(loc: Location): WriteResult['files'][number] {
   const file = mcpJsonPath(loc);
   const existing = readJsonFile(file);
-  const before = existing.mcpServers?.codegraph;
+  const before = existing.mcpServers?.vbgraph;
   const after = getMcpServerConfig();
 
   if (jsonDeepEqual(before, after)) {
@@ -174,13 +174,13 @@ export function writeMcpEntry(loc: Location): WriteResult['files'][number] {
   }
   // 'created' here means: the file itself did not exist before this
   // write. A pre-existing `.claude.json` containing other MCP servers
-  // (no `codegraph` key) is 'updated', not 'created' — we're adding
+  // (no `vbgraph` key) is 'updated', not 'created' — we're adding
   // an entry to a file that was already there. Codex uses a different
   // idiom (empty-content => 'created') because its config.toml is
   // ours alone to manage.
   const action: 'created' | 'updated' = before ? 'updated' : (fs.existsSync(file) ? 'updated' : 'created');
   if (!existing.mcpServers) existing.mcpServers = {};
-  existing.mcpServers.codegraph = after;
+  existing.mcpServers.vbgraph = after;
   writeJsonFile(file, existing);
   return { path: file, action };
 }
@@ -193,7 +193,7 @@ export function writePermissionsEntry(loc: Location): WriteResult['files'][numbe
   if (!settings.permissions) settings.permissions = {};
   if (!Array.isArray(settings.permissions.allow)) settings.permissions.allow = [];
 
-  const want = getCodeGraphPermissions();
+  const want = getVBGraphPermissions();
   const before = [...settings.permissions.allow];
   for (const perm of want) {
     if (!settings.permissions.allow.includes(perm)) {
@@ -213,13 +213,13 @@ export function writeInstructionsEntry(loc: Location): WriteResult['files'][numb
   const dir = path.dirname(file);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 
-  // Honor the legacy "unmarked ## CodeGraph" rewrite path that the
+  // Honor the legacy "unmarked ## VBGraph" rewrite path that the
   // original installer supported (some users hand-pasted a section
   // before markers existed). Detect first and migrate inline.
   if (fs.existsSync(file)) {
     const content = fs.readFileSync(file, 'utf-8');
-    if (!content.includes(CODEGRAPH_SECTION_START)) {
-      const headerMatch = content.match(/\n## CodeGraph\n/);
+    if (!content.includes(VBGRAPH_SECTION_START)) {
+      const headerMatch = content.match(/\n## VBGraph\n/);
       if (headerMatch && headerMatch.index !== undefined) {
         const sectionStart = headerMatch.index;
         const after = content.substring(sectionStart + 1);
@@ -240,8 +240,8 @@ export function writeInstructionsEntry(loc: Location): WriteResult['files'][numb
   const action = replaceOrAppendMarkedSection(
     file,
     INSTRUCTIONS_TEMPLATE,
-    CODEGRAPH_SECTION_START,
-    CODEGRAPH_SECTION_END,
+    VBGRAPH_SECTION_START,
+    VBGRAPH_SECTION_END,
   );
   // Map the four-state action to WriteResult's action vocabulary.
   const mapped: 'created' | 'updated' | 'unchanged' =

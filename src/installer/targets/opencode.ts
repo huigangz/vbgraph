@@ -14,7 +14,7 @@
  * Config shape uses opencode's wrapper:
  *   {
  *     "$schema": "https://opencode.ai/config.json",
- *     "mcp": { "codegraph": { "type": "local", "command": [...], "enabled": true } }
+ *     "mcp": { "vbgraph": { "type": "local", "command": [...], "enabled": true } }
  *   }
  *
  * The shape differs from Claude/Cursor — opencode uses `mcp.<name>`
@@ -44,8 +44,8 @@ import {
   replaceOrAppendMarkedSection,
 } from './shared';
 import {
-  CODEGRAPH_SECTION_END,
-  CODEGRAPH_SECTION_START,
+  VBGRAPH_SECTION_END,
+  VBGRAPH_SECTION_START,
   INSTRUCTIONS_TEMPLATE,
 } from '../instructions-template';
 
@@ -99,7 +99,7 @@ function parseConfig(text: string): Record<string, any> {
 function getOpencodeServerEntry(): { type: string; command: string[]; enabled: boolean } {
   return {
     type: 'local',
-    command: ['codegraph', 'serve', '--mcp'],
+    command: ['vbgraph', 'serve', '--mcp'],
     enabled: true,
   };
 }
@@ -118,7 +118,7 @@ class OpencodeTarget implements AgentTarget {
   detect(loc: Location): DetectionResult {
     const file = configPath(loc);
     const config = parseConfig(readConfigText(file));
-    const alreadyConfigured = !!config.mcp?.codegraph;
+    const alreadyConfigured = !!config.mcp?.vbgraph;
     const installed = loc === 'global'
       ? fs.existsSync(globalConfigDir())
       : fs.existsSync(file);
@@ -141,11 +141,11 @@ class OpencodeTarget implements AgentTarget {
     } else {
       const text = readConfigText(file);
       const config = parseConfig(text);
-      if (!config.mcp?.codegraph) {
+      if (!config.mcp?.vbgraph) {
         files.push({ path: file, action: 'not-found' });
       } else {
         // Drop our key surgically. Leaves siblings + comments untouched.
-        let edits = modify(text, ['mcp', 'codegraph'], undefined, {
+        let edits = modify(text, ['mcp', 'vbgraph'], undefined, {
           formattingOptions: FORMATTING,
         });
         let updated = applyEdits(text, edits);
@@ -164,7 +164,7 @@ class OpencodeTarget implements AgentTarget {
     }
 
     const instr = instructionsPath(loc);
-    const instrAction = removeMarkedSection(instr, CODEGRAPH_SECTION_START, CODEGRAPH_SECTION_END);
+    const instrAction = removeMarkedSection(instr, VBGRAPH_SECTION_START, VBGRAPH_SECTION_END);
     files.push({ path: instr, action: instrAction });
 
     return { files };
@@ -174,7 +174,7 @@ class OpencodeTarget implements AgentTarget {
     const target = configPath(loc);
     const snippet = JSON.stringify({
       $schema: 'https://opencode.ai/config.json',
-      mcp: { codegraph: getOpencodeServerEntry() },
+      mcp: { vbgraph: getOpencodeServerEntry() },
     }, null, 2);
     return `# Add to ${target}\n\n${snippet}\n`;
   }
@@ -197,7 +197,7 @@ function writeMcpEntry(loc: Location): WriteResult['files'][number] {
   }
 
   const config = parseConfig(text);
-  const before = config.mcp?.codegraph;
+  const before = config.mcp?.vbgraph;
   const after = getOpencodeServerEntry();
 
   if (jsonDeepEqual(before, after)) {
@@ -214,7 +214,7 @@ function writeMcpEntry(loc: Location): WriteResult['files'][number] {
 
   // Surgical edit — preserves comments, formatting, and order of
   // every key we don't touch.
-  const edits = modify(text, ['mcp', 'codegraph'], after, {
+  const edits = modify(text, ['mcp', 'vbgraph'], after, {
     formattingOptions: FORMATTING,
   });
   const updated = applyEdits(text, edits);
@@ -231,8 +231,8 @@ function writeInstructionsEntry(loc: Location): WriteResult['files'][number] {
   const action = replaceOrAppendMarkedSection(
     file,
     INSTRUCTIONS_TEMPLATE,
-    CODEGRAPH_SECTION_START,
-    CODEGRAPH_SECTION_END,
+    VBGRAPH_SECTION_START,
+    VBGRAPH_SECTION_END,
   );
   const mapped: 'created' | 'updated' | 'unchanged' =
     action === 'created' ? 'created'

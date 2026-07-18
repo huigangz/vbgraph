@@ -1,23 +1,23 @@
 /**
  * Directory Management
  *
- * Manages the .codegraph/ directory structure for CodeGraph data.
+ * Manages the .vbgraph/ directory structure for VBGraph data.
  */
 
 import * as fs from 'fs';
 import * as path from 'path';
 
 /**
- * CodeGraph directory name
+ * VBGraph directory name
  */
-export const CODEGRAPH_DIR = '.codegraph';
+export const VBGRAPH_DIR = '.vbgraph';
 
 /**
- * Contents of `.codegraph/.gitignore`. Single source of truth — both
+ * Contents of `.vbgraph/.gitignore`. Single source of truth — both
  * `createDirectory` and `validateDirectory`'s auto-repair write this exact
  * string, so the two paths cannot drift (e.g. one omitting `scip-cache/`).
  */
-const CODEGRAPH_GITIGNORE = `# CodeGraph data files
+const VBGRAPH_GITIGNORE = `# VBGraph data files
 # These are local to each machine and should not be committed
 
 # Database
@@ -39,36 +39,36 @@ scip-cache/
 `;
 
 /**
- * Get the .codegraph directory path for a project
+ * Get the .vbgraph directory path for a project
  */
-export function getCodeGraphDir(projectRoot: string): string {
-  return path.join(projectRoot, CODEGRAPH_DIR);
+export function getVBGraphDir(projectRoot: string): string {
+  return path.join(projectRoot, VBGRAPH_DIR);
 }
 
 /**
- * Check if a project has been initialized with CodeGraph
- * Requires both .codegraph/ directory AND codegraph.db to exist
+ * Check if a project has been initialized with VBGraph
+ * Requires both .vbgraph/ directory AND vbgraph.db to exist
  */
 export function isInitialized(projectRoot: string): boolean {
-  const codegraphDir = getCodeGraphDir(projectRoot);
-  if (!fs.existsSync(codegraphDir) || !fs.statSync(codegraphDir).isDirectory()) {
+  const vbgraphDir = getVBGraphDir(projectRoot);
+  if (!fs.existsSync(vbgraphDir) || !fs.statSync(vbgraphDir).isDirectory()) {
     return false;
   }
-  // Must have codegraph.db, not just .codegraph folder
-  const dbPath = path.join(codegraphDir, 'codegraph.db');
+  // Must have vbgraph.db, not just .vbgraph folder
+  const dbPath = path.join(vbgraphDir, 'vbgraph.db');
   return fs.existsSync(dbPath);
 }
 
 /**
- * Find the nearest parent directory containing .codegraph/
+ * Find the nearest parent directory containing .vbgraph/
  *
- * Walks up from the given path to find a CodeGraph-initialized project,
+ * Walks up from the given path to find a VBGraph-initialized project,
  * similar to how git finds .git/ directories.
  *
  * @param startPath - Directory to start searching from
- * @returns The project root containing .codegraph/, or null if not found
+ * @returns The project root containing .vbgraph/, or null if not found
  */
-export function findNearestCodeGraphRoot(startPath: string): string | null {
+export function findNearestVBGraphRoot(startPath: string): string | null {
   let current = path.resolve(startPath);
   const root = path.parse(current).root;
 
@@ -90,64 +90,64 @@ export function findNearestCodeGraphRoot(startPath: string): string | null {
 }
 
 /**
- * Create the .codegraph directory structure
- * Note: Only throws if codegraph.db already exists, not just if .codegraph/ exists.
+ * Create the .vbgraph directory structure
+ * Note: Only throws if vbgraph.db already exists, not just if .vbgraph/ exists.
  */
 export function createDirectory(projectRoot: string): void {
-  const codegraphDir = getCodeGraphDir(projectRoot);
-  const dbPath = path.join(codegraphDir, 'codegraph.db');
+  const vbgraphDir = getVBGraphDir(projectRoot);
+  const dbPath = path.join(vbgraphDir, 'vbgraph.db');
 
-  // Only throw if CodeGraph is actually initialized (db exists)
-  // .codegraph/ folder alone is fine
+  // Only throw if VBGraph is actually initialized (db exists)
+  // .vbgraph/ folder alone is fine
   if (fs.existsSync(dbPath)) {
-    throw new Error(`CodeGraph already initialized in ${projectRoot}`);
+    throw new Error(`VBGraph already initialized in ${projectRoot}`);
   }
 
   // Create main directory (if it doesn't exist)
-  fs.mkdirSync(codegraphDir, { recursive: true });
+  fs.mkdirSync(vbgraphDir, { recursive: true });
 
-  // Create .gitignore inside .codegraph (if it doesn't exist)
-  const gitignorePath = path.join(codegraphDir, '.gitignore');
+  // Create .gitignore inside .vbgraph (if it doesn't exist)
+  const gitignorePath = path.join(vbgraphDir, '.gitignore');
   if (!fs.existsSync(gitignorePath)) {
-    fs.writeFileSync(gitignorePath, CODEGRAPH_GITIGNORE, 'utf-8');
+    fs.writeFileSync(gitignorePath, VBGRAPH_GITIGNORE, 'utf-8');
   }
 }
 
 /**
- * Remove the .codegraph directory
+ * Remove the .vbgraph directory
  */
 export function removeDirectory(projectRoot: string): void {
-  const codegraphDir = getCodeGraphDir(projectRoot);
+  const vbgraphDir = getVBGraphDir(projectRoot);
 
-  if (!fs.existsSync(codegraphDir)) {
+  if (!fs.existsSync(vbgraphDir)) {
     return;
   }
 
-  // Verify .codegraph is a real directory, not a symlink pointing elsewhere
-  const lstat = fs.lstatSync(codegraphDir);
+  // Verify .vbgraph is a real directory, not a symlink pointing elsewhere
+  const lstat = fs.lstatSync(vbgraphDir);
   if (lstat.isSymbolicLink()) {
     // Only remove the symlink itself, never follow it for recursive delete
-    fs.unlinkSync(codegraphDir);
+    fs.unlinkSync(vbgraphDir);
     return;
   }
 
   if (!lstat.isDirectory()) {
     // Not a directory - remove the single file
-    fs.unlinkSync(codegraphDir);
+    fs.unlinkSync(vbgraphDir);
     return;
   }
 
   // Recursively remove directory
-  fs.rmSync(codegraphDir, { recursive: true, force: true });
+  fs.rmSync(vbgraphDir, { recursive: true, force: true });
 }
 
 /**
- * Get all files in the .codegraph directory
+ * Get all files in the .vbgraph directory
  */
 export function listDirectoryContents(projectRoot: string): string[] {
-  const codegraphDir = getCodeGraphDir(projectRoot);
+  const vbgraphDir = getVBGraphDir(projectRoot);
 
-  if (!fs.existsSync(codegraphDir)) {
+  if (!fs.existsSync(vbgraphDir)) {
     return [];
   }
 
@@ -159,7 +159,7 @@ export function listDirectoryContents(projectRoot: string): string[] {
     for (const entry of entries) {
       const relativePath = prefix ? `${prefix}/${entry.name}` : entry.name;
 
-      // Skip symlinks to prevent following links outside .codegraph
+      // Skip symlinks to prevent following links outside .vbgraph
       if (entry.isSymbolicLink()) {
         continue;
       }
@@ -172,17 +172,17 @@ export function listDirectoryContents(projectRoot: string): string[] {
     }
   }
 
-  walkDir(codegraphDir);
+  walkDir(vbgraphDir);
   return files;
 }
 
 /**
- * Get the total size of the .codegraph directory in bytes
+ * Get the total size of the .vbgraph directory in bytes
  */
 export function getDirectorySize(projectRoot: string): number {
-  const codegraphDir = getCodeGraphDir(projectRoot);
+  const vbgraphDir = getVBGraphDir(projectRoot);
 
-  if (!fs.existsSync(codegraphDir)) {
+  if (!fs.existsSync(vbgraphDir)) {
     return 0;
   }
 
@@ -192,7 +192,7 @@ export function getDirectorySize(projectRoot: string): number {
     const entries = fs.readdirSync(dir, { withFileTypes: true });
 
     for (const entry of entries) {
-      // Skip symlinks to prevent following links outside .codegraph
+      // Skip symlinks to prevent following links outside .vbgraph
       if (entry.isSymbolicLink()) {
         continue;
       }
@@ -208,19 +208,19 @@ export function getDirectorySize(projectRoot: string): number {
     }
   }
 
-  walkDir(codegraphDir);
+  walkDir(vbgraphDir);
   return totalSize;
 }
 
 /**
- * Ensure a subdirectory exists within .codegraph
+ * Ensure a subdirectory exists within .vbgraph
  */
 export function ensureSubdirectory(projectRoot: string, subdirName: string): string {
   if (subdirName.includes('..') || subdirName.includes(path.sep) || subdirName.includes('/')) {
     throw new Error(`Invalid subdirectory name: ${subdirName}`);
   }
 
-  const subdirPath = path.join(getCodeGraphDir(projectRoot), subdirName);
+  const subdirPath = path.join(getVBGraphDir(projectRoot), subdirName);
 
   if (!fs.existsSync(subdirPath)) {
     fs.mkdirSync(subdirPath, { recursive: true });
@@ -230,33 +230,33 @@ export function ensureSubdirectory(projectRoot: string, subdirName: string): str
 }
 
 /**
- * Check if the .codegraph directory has valid structure
+ * Check if the .vbgraph directory has valid structure
  */
 export function validateDirectory(projectRoot: string): {
   valid: boolean;
   errors: string[];
 } {
   const errors: string[] = [];
-  const codegraphDir = getCodeGraphDir(projectRoot);
+  const vbgraphDir = getVBGraphDir(projectRoot);
 
-  if (!fs.existsSync(codegraphDir)) {
-    errors.push('CodeGraph directory does not exist');
+  if (!fs.existsSync(vbgraphDir)) {
+    errors.push('VBGraph directory does not exist');
     return { valid: false, errors };
   }
 
-  if (!fs.statSync(codegraphDir).isDirectory()) {
-    errors.push('.codegraph exists but is not a directory');
+  if (!fs.statSync(vbgraphDir).isDirectory()) {
+    errors.push('.vbgraph exists but is not a directory');
     return { valid: false, errors };
   }
 
   // Auto-repair missing .gitignore (non-critical file)
-  const gitignorePath = path.join(codegraphDir, '.gitignore');
+  const gitignorePath = path.join(vbgraphDir, '.gitignore');
   if (!fs.existsSync(gitignorePath)) {
     try {
-      fs.writeFileSync(gitignorePath, CODEGRAPH_GITIGNORE, 'utf-8');
+      fs.writeFileSync(gitignorePath, VBGRAPH_GITIGNORE, 'utf-8');
     } catch {
       // Non-fatal: warn but don't block
-      errors.push('.gitignore missing in .codegraph directory and could not be created');
+      errors.push('.gitignore missing in .vbgraph directory and could not be created');
     }
   }
 

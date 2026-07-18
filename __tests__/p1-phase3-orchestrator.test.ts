@@ -55,7 +55,7 @@ function registerFake(r: FrameworkResolver): FrameworkResolver {
 }
 
 beforeEach(() => {
-  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-p1-orch-'));
+  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vbgraph-p1-orch-'));
   conn = DatabaseConnection.initialize(path.join(tmpDir, 'g.db'));
   q = new QueryBuilder(conn.getDb());
 });

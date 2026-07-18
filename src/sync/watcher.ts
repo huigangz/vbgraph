@@ -9,7 +9,7 @@
  */
 
 import * as fs from 'fs';
-import { CodeGraphConfig } from '../types';
+import { VBGraphConfig } from '../types';
 import { shouldIncludeFile } from '../extraction';
 import { logDebug, logWarn } from '../errors';
 import { normalizePath } from '../utils';
@@ -43,8 +43,8 @@ export interface WatchOptions {
  * Design goals:
  * - Minimal resource usage (native OS file events, no polling)
  * - Debounced to avoid thrashing on rapid saves
- * - Filters against CodeGraph include/exclude patterns
- * - Ignores .codegraph/ directory changes
+ * - Filters against VBGraph include/exclude patterns
+ * - Ignores .vbgraph/ directory changes
  */
 export class FileWatcher {
   private watcher: fs.FSWatcher | null = null;
@@ -54,7 +54,7 @@ export class FileWatcher {
   private stopped = false;
 
   private readonly projectRoot: string;
-  private readonly config: CodeGraphConfig;
+  private readonly config: VBGraphConfig;
   private readonly debounceMs: number;
   private readonly syncFn: () => Promise<{ filesChanged: number; durationMs: number }>;
   private readonly onSyncComplete?: WatchOptions['onSyncComplete'];
@@ -62,7 +62,7 @@ export class FileWatcher {
 
   constructor(
     projectRoot: string,
-    config: CodeGraphConfig,
+    config: VBGraphConfig,
     syncFn: () => Promise<{ filesChanged: number; durationMs: number }>,
     options: WatchOptions = {}
   ) {
@@ -92,11 +92,11 @@ export class FileWatcher {
           // Normalize path separators
           const normalized = normalizePath(filename);
 
-          // Ignore .codegraph/ directory changes (our own DB writes)
+          // Ignore .vbgraph/ directory changes (our own DB writes)
           if (
-            normalized === '.codegraph' ||
-            normalized.startsWith('.codegraph/') ||
-            normalized.startsWith('.codegraph\\')
+            normalized === '.vbgraph' ||
+            normalized.startsWith('.vbgraph/') ||
+            normalized.startsWith('.vbgraph\\')
           ) {
             return;
           }

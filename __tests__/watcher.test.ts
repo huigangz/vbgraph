@@ -9,8 +9,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { FileWatcher } from '../src/sync/watcher';
-import type { CodeGraphConfig } from '../src/types';
-import CodeGraph from '../src/index';
+import type { VBGraphConfig } from '../src/types';
+import VBGraph from '../src/index';
 
 /**
  * Helper to wait for a condition with timeout
@@ -34,7 +34,7 @@ function waitFor(
 describe('FileWatcher', () => {
   let testDir: string;
 
-  const baseConfig: CodeGraphConfig = {
+  const baseConfig: VBGraphConfig = {
     version: 1,
     rootDir: '.',
     include: ['**/*.ts', '**/*.js'],
@@ -47,7 +47,7 @@ describe('FileWatcher', () => {
   };
 
   beforeEach(() => {
-    testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-watcher-'));
+    testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vbgraph-watcher-'));
     // Create a source file so the directory isn't empty
     const srcDir = path.join(testDir, 'src');
     fs.mkdirSync(srcDir);
@@ -158,7 +158,7 @@ describe('FileWatcher', () => {
       watcher.stop();
     });
 
-    it('should ignore .codegraph directory changes', async () => {
+    it('should ignore .vbgraph directory changes', async () => {
       const syncFn = vi.fn().mockResolvedValue({ filesChanged: 0, durationMs: 0 });
       const watcher = new FileWatcher(testDir, baseConfig, syncFn, { debounceMs: 200 });
 
@@ -168,8 +168,8 @@ describe('FileWatcher', () => {
       await new Promise((r) => setTimeout(r, 400));
       syncFn.mockClear();
 
-      // Simulate a .codegraph directory change
-      const cgDir = path.join(testDir, '.codegraph');
+      // Simulate a .vbgraph directory change
+      const cgDir = path.join(testDir, '.vbgraph');
       fs.mkdirSync(cgDir, { recursive: true });
       fs.writeFileSync(path.join(cgDir, 'db.sqlite'), 'fake');
 
@@ -220,15 +220,15 @@ describe('FileWatcher', () => {
     });
   });
 
-  describe('CodeGraph integration', () => {
-    let cg: CodeGraph;
+  describe('VBGraph integration', () => {
+    let cg: VBGraph;
 
     afterEach(() => {
       if (cg) cg.close();
     });
 
-    it('should watch and unwatch via CodeGraph API', async () => {
-      cg = CodeGraph.initSync(testDir, {
+    it('should watch and unwatch via VBGraph API', async () => {
+      cg = VBGraph.initSync(testDir, {
         config: { include: ['**/*.ts'], exclude: [] },
       });
       await cg.indexAll();
@@ -244,7 +244,7 @@ describe('FileWatcher', () => {
     });
 
     it('should stop watching on close', async () => {
-      cg = CodeGraph.initSync(testDir, {
+      cg = VBGraph.initSync(testDir, {
         config: { include: ['**/*.ts'], exclude: [] },
       });
       await cg.indexAll();
@@ -259,7 +259,7 @@ describe('FileWatcher', () => {
     });
 
     it('should auto-sync when files change while watching', async () => {
-      cg = CodeGraph.initSync(testDir, {
+      cg = VBGraph.initSync(testDir, {
         config: { include: ['**/*.ts'], exclude: [] },
       });
       await cg.indexAll();

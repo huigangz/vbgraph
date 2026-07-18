@@ -343,7 +343,7 @@ export class QueryBuilder {
 
     // Validate required fields to prevent SQLite bind errors
     if (!node.id || !node.kind || !node.name || !node.filePath || !node.language) {
-      console.error('[CodeGraph] Skipping node with missing required fields:', {
+      console.error('[VBGraph] Skipping node with missing required fields:', {
         id: node.id,
         kind: node.kind,
         name: node.name,
@@ -445,7 +445,7 @@ export class QueryBuilder {
 
     // Validate required fields
     if (!node.id || !node.kind || !node.name || !node.filePath || !node.language) {
-      console.error('[CodeGraph] Skipping node update with missing required fields:', node.id);
+      console.error('[VBGraph] Skipping node update with missing required fields:', node.id);
       return;
     }
 
@@ -1434,7 +1434,7 @@ export class QueryBuilder {
    * Count of edges hidden ONLY because at least one endpoint is hidden-stale —
    * i.e. edges that pass `freshPredicate` on their own row but fail
    * `visibleNodeIdPredicate` on source OR target. Surfaced by
-   * `codegraph status` as the "Dangling against stale" diagnostic.
+   * `vbgraph status` as the "Dangling against stale" diagnostic.
    *
    * Raw read by design — counts edges the public API hides; whitelisted
    * in the CI bypass guard.
@@ -1588,7 +1588,7 @@ export class QueryBuilder {
    * For each `framework:<name>` provenance ever observed on an edge,
    * return the count of distinct edges in which that provenance
    * contributes (counts membership in `provenances[]`, NOT primary
-   * `provenance`). Used by `codegraph status` per ship gate 9 so
+   * `provenance`). Used by `vbgraph status` per ship gate 9 so
    * SCIP-primary edges merged with a framework contribution still
    * appear in the per-framework count.
    */
@@ -1623,9 +1623,9 @@ export class QueryBuilder {
   /**
    * Edge counts grouped by primary `provenance`, under the default
    * freshness + endpoint-visibility contract (so the counts sum to
-   * `getStats().edgeCount`). Used by `codegraph status` to derive the
+   * `getStats().edgeCount`). Used by `vbgraph status` to derive the
    * per-confidence-tier breakdown (P0.4d) — the provenance→tier mapping
-   * (`deriveConfidenceTier`) is applied by the CodeGraph facade, not here.
+   * (`deriveConfidenceTier`) is applied by the VBGraph facade, not here.
    *
    * A NULL primary provenance (legacy rows predating schema v5) is
    * returned as `null`; the facade maps it to the `ambiguous` tier.
@@ -2024,8 +2024,8 @@ export class QueryBuilder {
 
   /**
    * Aggregate node counts grouped by `(language, provenance)`. Used by
-   * `CodeGraph.getLanguageTiers` (P2.4.3) to derive the per-language tier
-   * display in `codegraph status` — one query instead of `N × 2` per-language
+   * `VBGraph.getLanguageTiers` (P2.4.3) to derive the per-language tier
+   * display in `vbgraph status` — one query instead of `N × 2` per-language
    * COUNT calls.
    *
    * Reads RAW row state — does NOT apply `freshPredicate`. The status command
@@ -2500,7 +2500,7 @@ export class QueryBuilder {
    * Reads raw `stale`/`staleness_visible` columns; does NOT apply the
    * default freshness filter (it would defeat the purpose).
    *
-   * Used by `codegraph status` (P2.4) to report SCIP drift transparently.
+   * Used by `vbgraph status` (P2.4) to report SCIP drift transparently.
    * The triple lets a status report distinguish "shadow active behind the
    * scenes" (hidden-stale) from "needs refresh, no grammar" (visible-stale)
    * — two semantically different categories that the public API conflates

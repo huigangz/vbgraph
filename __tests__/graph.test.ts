@@ -8,16 +8,16 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import CodeGraph from '../src/index';
+import VBGraph from '../src/index';
 import { Node, Edge } from '../src/types';
 
 describe('Graph Queries', () => {
   let testDir: string;
-  let cg: CodeGraph;
+  let cg: VBGraph;
 
   beforeEach(async () => {
     // Create temp directory
-    testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-graph-test-'));
+    testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vbgraph-graph-test-'));
 
     // Create test files with relationships
     const srcDir = path.join(testDir, 'src');
@@ -114,7 +114,7 @@ export { main };
     );
 
     // Initialize and index
-    cg = CodeGraph.initSync(testDir, {
+    cg = VBGraph.initSync(testDir, {
       config: {
         include: ['src/**/*.ts'],
         exclude: [],

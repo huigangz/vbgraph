@@ -25,7 +25,7 @@ import { DatabaseConnection, getDatabasePath } from '../src/db';
 import { QueryBuilder } from '../src/db/queries';
 import type { SqliteDatabase } from '../src/db/sqlite-adapter';
 import type { Node, Edge } from '../src/types';
-import CodeGraph from '../src/index';
+import VBGraph from '../src/index';
 import { writeSyntheticScip } from './helpers/scip-fixtures';
 import { detectInstalledScipIndexers } from '../src/extraction/scip';
 
@@ -39,7 +39,7 @@ beforeAll(async () => {
 }, 30000);
 
 beforeEach(() => {
-  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-p2review-'));
+  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vbgraph-p2review-'));
   projectRoot = path.join(tmpDir, 'project');
   fs.mkdirSync(projectRoot, { recursive: true });
 });
@@ -78,7 +78,7 @@ describe('Review fix #4 — *IncludingDanglingEndpoints siblings', () => {
   let qb: QueryBuilder;
 
   beforeEach(() => {
-    fs.mkdirSync(path.join(projectRoot, '.codegraph'), { recursive: true });
+    fs.mkdirSync(path.join(projectRoot, '.vbgraph'), { recursive: true });
     conn = DatabaseConnection.initialize(getDatabasePath(projectRoot));
     qb = new QueryBuilder(conn.getDb());
   });
@@ -178,7 +178,7 @@ describe('Review fix #4 — *IncludingDanglingEndpoints siblings', () => {
 describe('Review fixes #1 + #2 + #3 — refreshScip end-to-end with no-op spawn', () => {
   it('recreates fallback rows for empty SCIP docs; invalidates cache; reruns phase3', async () => {
     // Init a project.
-    const cgInit = CodeGraph.initSync(projectRoot);
+    const cgInit = VBGraph.initSync(projectRoot);
     cgInit.close();
 
     // Stage 1: pre-populate the DB with an OLD scip-empty-fallback row
@@ -220,9 +220,9 @@ describe('Review fixes #1 + #2 + #3 — refreshScip end-to-end with no-op spawn'
       documents: [{ relativePath: fileRel, occurrences: [] }],
     });
 
-    // Stage 3: open CodeGraph + warm the cache + run refresh with a
+    // Stage 3: open VBGraph + warm the cache + run refresh with a
     // no-op spawn (just `node -e ""` which exits 0).
-    const cg = await CodeGraph.open(projectRoot);
+    const cg = await VBGraph.open(projectRoot);
     try {
       // Pre-warm cache for the fallback node about to be wiped + replaced.
       const cached = cg.getNode('old-fb');
@@ -283,7 +283,7 @@ describe('Review fixes #1 + #2 + #3 — refreshScip end-to-end with no-op spawn'
 
 describe('Round-2 fix #1 — Phase 3 recoverable errors surface in refresh result.error', () => {
   it('phase stays "ok" but result.error carries the Phase 3 diagnostic', async () => {
-    const cgInit = CodeGraph.initSync(projectRoot);
+    const cgInit = VBGraph.initSync(projectRoot);
     cgInit.close();
 
     // Pre-stage a synthetic .scip + project DB just like the fix-#1
@@ -314,7 +314,7 @@ describe('Round-2 fix #1 — Phase 3 recoverable errors surface in refresh resul
     });
 
     try {
-      const cg = await CodeGraph.open(projectRoot);
+      const cg = await VBGraph.open(projectRoot);
       try {
         const result = await cg.refreshScip({
           command: ['node', '-e', '""'],
@@ -352,12 +352,12 @@ describe('Round-2 fix #1 — Phase 3 recoverable errors surface in refresh resul
 //   (a) stderr — covers launchd StandardErrorPath + systemd journald
 //   (b) per-run log file append — covers Task Scheduler (any OS)
 //   (c) sidecar `lastError` field — persistent across runs; surfaced
-//       by `codegraph status` and `cat .codegraph/scip-last-refresh.json`
+//       by `vbgraph status` and `cat .vbgraph/scip-last-refresh.json`
 // ---------------------------------------------------------------------------
 
 describe('Round-3 — derived-error persistence for scheduled refresh', () => {
   it('refreshScip writes derived errors to the sidecar lastError field and the log file', async () => {
-    const cgInit = CodeGraph.initSync(projectRoot);
+    const cgInit = VBGraph.initSync(projectRoot);
     cgInit.close();
 
     const scipPathAbs = path.join(projectRoot, 'index.scip');
@@ -383,7 +383,7 @@ describe('Round-3 — derived-error persistence for scheduled refresh', () => {
     });
 
     try {
-      const cg = await CodeGraph.open(projectRoot);
+      const cg = await VBGraph.open(projectRoot);
       let result: import('../src/types').ScipRefreshResult;
       try {
         result = await cg.refreshScip({
@@ -400,11 +400,11 @@ describe('Round-3 — derived-error persistence for scheduled refresh', () => {
       // === Channel (b): per-run log file append ===
       expect(result.logPath).not.toBeNull();
       const logContents = fs.readFileSync(result.logPath!, 'utf-8');
-      expect(logContents).toContain('[codegraph derived-data warning');
+      expect(logContents).toContain('[vbgraph derived-data warning');
       expect(logContents).toContain(resolverName);
 
       // === Channel (c): sidecar lastError ===
-      const sidecarPath = path.join(projectRoot, '.codegraph', 'scip-last-refresh.json');
+      const sidecarPath = path.join(projectRoot, '.vbgraph', 'scip-last-refresh.json');
       expect(fs.existsSync(sidecarPath)).toBe(true);
       const sidecar = JSON.parse(fs.readFileSync(sidecarPath, 'utf-8'));
       expect(sidecar.lastError).not.toBeNull();
@@ -428,7 +428,7 @@ describe('Round-3 — derived-error persistence for scheduled refresh', () => {
   // also triggers a derived-data warning. The log file must contain ALL
   // of the child's output BEFORE the derived-warning marker.
   it('refreshScip preserves indexer-output / derived-warning ordering with a noisy child', async () => {
-    const cgInit = CodeGraph.initSync(projectRoot);
+    const cgInit = VBGraph.initSync(projectRoot);
     cgInit.close();
 
     const scipPathAbs = path.join(projectRoot, 'index.scip');
@@ -464,7 +464,7 @@ describe('Round-3 — derived-error persistence for scheduled refresh', () => {
       `process.stdout.write('${TAIL_MARKER}\\n');`;
 
     try {
-      const cg = await CodeGraph.open(projectRoot);
+      const cg = await VBGraph.open(projectRoot);
       let result: import('../src/types').ScipRefreshResult;
       try {
         result = await cg.refreshScip({
@@ -482,7 +482,7 @@ describe('Round-3 — derived-error persistence for scheduled refresh', () => {
       const log = fs.readFileSync(result.logPath!, 'utf-8');
       const headIdx = log.indexOf(HEAD_MARKER);
       const tailIdx = log.indexOf(TAIL_MARKER);
-      const warningIdx = log.indexOf('[codegraph derived-data warning');
+      const warningIdx = log.indexOf('[vbgraph derived-data warning');
 
       // All three markers present.
       expect(headIdx).toBeGreaterThanOrEqual(0);
@@ -497,7 +497,7 @@ describe('Round-3 — derived-error persistence for scheduled refresh', () => {
   }, 60000);
 
   it('sidecar lastError is null on a clean refresh', async () => {
-    const cgInit = CodeGraph.initSync(projectRoot);
+    const cgInit = VBGraph.initSync(projectRoot);
     cgInit.close();
 
     const scipPathAbs = path.join(projectRoot, 'index.scip');
@@ -510,7 +510,7 @@ describe('Round-3 — derived-error persistence for scheduled refresh', () => {
       documents: [{ relativePath: fileRel, occurrences: [] }],
     });
 
-    const cg = await CodeGraph.open(projectRoot);
+    const cg = await VBGraph.open(projectRoot);
     let result: import('../src/types').ScipRefreshResult;
     try {
       result = await cg.refreshScip({
@@ -525,21 +525,21 @@ describe('Round-3 — derived-error persistence for scheduled refresh', () => {
     expect(result.error).toBeNull();
 
     const sidecar = JSON.parse(
-      fs.readFileSync(path.join(projectRoot, '.codegraph', 'scip-last-refresh.json'), 'utf-8'),
+      fs.readFileSync(path.join(projectRoot, '.vbgraph', 'scip-last-refresh.json'), 'utf-8'),
     );
     expect(sidecar.lastError).toBeNull();
   }, 60000);
 
-  it('CodeGraph.getLastScipRefresh exposes lastError (and tolerates legacy sidecars without it)', () => {
-    const codegraphDir = path.join(projectRoot, '.codegraph');
-    fs.mkdirSync(codegraphDir, { recursive: true });
-    // Initialize so CodeGraph.openSync accepts the project.
-    const cgInit = CodeGraph.initSync(projectRoot);
+  it('VBGraph.getLastScipRefresh exposes lastError (and tolerates legacy sidecars without it)', () => {
+    const vbgraphDir = path.join(projectRoot, '.vbgraph');
+    fs.mkdirSync(vbgraphDir, { recursive: true });
+    // Initialize so VBGraph.openSync accepts the project.
+    const cgInit = VBGraph.initSync(projectRoot);
     cgInit.close();
 
     // Write a sidecar WITH lastError.
     fs.writeFileSync(
-      path.join(codegraphDir, 'scip-last-refresh.json'),
+      path.join(vbgraphDir, 'scip-last-refresh.json'),
       JSON.stringify({
         refreshedAt: new Date().toISOString(),
         scipPath: '/x.scip',
@@ -550,7 +550,7 @@ describe('Round-3 — derived-error persistence for scheduled refresh', () => {
       }),
     );
     {
-      const cg = CodeGraph.openSync(projectRoot);
+      const cg = VBGraph.openSync(projectRoot);
       try {
         const lr = cg.getLastScipRefresh();
         expect(lr?.lastError).toBe('some phase3 warning');
@@ -561,7 +561,7 @@ describe('Round-3 — derived-error persistence for scheduled refresh', () => {
 
     // Legacy sidecar (no lastError field) — must surface as null.
     fs.writeFileSync(
-      path.join(codegraphDir, 'scip-last-refresh.json'),
+      path.join(vbgraphDir, 'scip-last-refresh.json'),
       JSON.stringify({
         refreshedAt: new Date().toISOString(),
         scipPath: '/x.scip',
@@ -570,7 +570,7 @@ describe('Round-3 — derived-error persistence for scheduled refresh', () => {
         durationMs: 1,
       }),
     );
-    const cg2 = CodeGraph.openSync(projectRoot);
+    const cg2 = VBGraph.openSync(projectRoot);
     try {
       const lr = cg2.getLastScipRefresh();
       expect(lr).not.toBeNull();
@@ -640,7 +640,7 @@ describe('Review fix #5 — Task Scheduler template encoding', () => {
 
 describe('Round-5 — log stream error handling', () => {
   it('refreshScip returns spawn-failed (not a crash) when the log stream errors immediately', async () => {
-    const cgInit = CodeGraph.initSync(projectRoot);
+    const cgInit = VBGraph.initSync(projectRoot);
     cgInit.close();
 
     // Stage a synthetic .scip so we'd otherwise reach ingest.
@@ -662,7 +662,7 @@ describe('Round-5 — log stream error handling', () => {
     // is created), Node would crash the process with an unhandled
     // emitter error before refreshScip's later listener got the chance.
     const { Writable } = await import('stream');
-    const cg = await CodeGraph.open(projectRoot);
+    const cg = await VBGraph.open(projectRoot);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (cg as any).createRefreshLogStream = (_logPath: string) => {
       const s = new Writable({ write(_c, _e, cb) { cb(); } });
@@ -705,7 +705,7 @@ describe('Round-5 — log stream error handling', () => {
   // OS or the global fs module (both of which fail cross-platform —
   // see the ESM-namespace freeze on `import * as fs`).
   it('refreshScip returns spawn-failed when the log stream errors during final flush', async () => {
-    const cgInit = CodeGraph.initSync(projectRoot);
+    const cgInit = VBGraph.initSync(projectRoot);
     cgInit.close();
 
     const scipPathAbs = path.join(projectRoot, 'index.scip');
@@ -720,7 +720,7 @@ describe('Round-5 — log stream error handling', () => {
 
     const { Writable } = await import('stream');
 
-    const cg = await CodeGraph.open(projectRoot);
+    const cg = await VBGraph.open(projectRoot);
 
     // Override the per-run log stream factory on this single instance.
     // The returned Writable accepts every piped write (so the spawn loop
@@ -779,7 +779,7 @@ describe('Round-5 — log stream error handling', () => {
   // fix, refreshScip returns phase 'spawn-failed' within a few seconds.
   // The tight test-level timeout (10s) is the hang detector.
   it('refreshScip kills the noisy child and does not hang when the log stream errors mid-run', async () => {
-    const cgInit = CodeGraph.initSync(projectRoot);
+    const cgInit = VBGraph.initSync(projectRoot);
     cgInit.close();
 
     const scipPathAbs = path.join(projectRoot, 'index.scip');
@@ -793,7 +793,7 @@ describe('Round-5 — log stream error handling', () => {
     });
 
     const { Writable } = await import('stream');
-    const cg = await CodeGraph.open(projectRoot);
+    const cg = await VBGraph.open(projectRoot);
 
     // Synthetic stream: errors on the very first write attempt while the
     // child is still producing output. This is the "mid-run" timing — the

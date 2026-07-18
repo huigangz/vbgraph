@@ -1,7 +1,7 @@
 /**
  * P0.6 — orchestrator dual-backend dispatch.
  *
- * `codegraph index --scip <path>` ingests the SCIP backend and the tree-sitter
+ * `vbgraph index --scip <path>` ingests the SCIP backend and the tree-sitter
  * pass skips the SCIP-covered files; `--no-scip` forces Tier 0. The
  * `--scip-auto` spawn loop is exercised directly with a fake indexer.
  */
@@ -11,7 +11,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
-import { CodeGraph } from '../src';
+import { VBGraph } from '../src';
 import { runScipAutoSpawn } from '../src/extraction/scip';
 import type { DetectedIndexer } from '../src/extraction/scip';
 import { writeSyntheticScip } from './helpers/scip-fixtures';
@@ -19,7 +19,7 @@ import { writeSyntheticScip } from './helpers/scip-fixtures';
 let tmpDir: string;
 
 beforeEach(() => {
-  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-p06-'));
+  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vbgraph-p06-'));
 });
 
 afterEach(() => {
@@ -49,14 +49,14 @@ async function writeCsScip(scipPath: string): Promise<void> {
   });
 }
 
-describe('dual-backend dispatch via codegraph index --scip', () => {
+describe('dual-backend dispatch via vbgraph index --scip', () => {
   it('ingests SCIP for covered files and tree-sitters the rest', async () => {
     writeSource('src/A.cs', 'namespace N { class A { void M() {} } }\n');
     writeSource('src/util.ts', 'export function helper() { return 1; }\n');
     const scipPath = path.join(tmpDir, 'index.scip');
     await writeCsScip(scipPath);
 
-    const cg = CodeGraph.initSync(tmpDir);
+    const cg = VBGraph.initSync(tmpDir);
     try {
       const result = await cg.indexAll({ scip: [scipPath] });
       expect(result.success).toBe(true);
@@ -84,7 +84,7 @@ describe('dual-backend dispatch via codegraph index --scip', () => {
     const scipPath = path.join(tmpDir, 'index.scip');
     await writeCsScip(scipPath);
 
-    const cg = CodeGraph.initSync(tmpDir);
+    const cg = VBGraph.initSync(tmpDir);
     try {
       await cg.indexAll({ scip: [scipPath], noScip: true });
       const csNodes = cg.getNodesInFile('src/A.cs');
@@ -103,7 +103,7 @@ describe('dual-backend dispatch via codegraph index --scip', () => {
     await writeCsScip(aScip); // covers src/A.cs
     await writeCsScip(bScip); // also covers src/A.cs — overlap
 
-    const cg = CodeGraph.initSync(tmpDir);
+    const cg = VBGraph.initSync(tmpDir);
     try {
       const result = await cg.indexAll({ scip: [aScip, bScip] });
       expect(result.success).toBe(false);
@@ -121,7 +121,7 @@ describe('dual-backend dispatch via codegraph index --scip', () => {
     const badScip = path.join(tmpDir, 'bad.scip');
     fs.writeFileSync(badScip, Buffer.from([0x01, 0x02, 0x03]));
 
-    const cg = CodeGraph.initSync(tmpDir);
+    const cg = VBGraph.initSync(tmpDir);
     try {
       const result = await cg.indexAll({ scip: [badScip] });
       expect(result.success).toBe(false);
@@ -137,12 +137,12 @@ describe('dual-backend dispatch via codegraph index --scip', () => {
     const scipPath = path.join(tmpDir, 'index.scip');
     await writeCsScip(scipPath);
 
-    const cg = CodeGraph.initSync(tmpDir);
+    const cg = VBGraph.initSync(tmpDir);
     try {
       await cg.indexAll({ scip: [scipPath] });
       expect(cg.getNodesInFile('src/A.cs').every((n) => n.provenance === 'scip')).toBe(true);
 
-      // `codegraph index --force` clears the graph, then re-indexes Tier 0.
+      // `vbgraph index --force` clears the graph, then re-indexes Tier 0.
       // clear() must also wipe scip_documents — otherwise src/A.cs stays
       // "SCIP-covered", the tree-sitter pass skips it, and it ends unindexed.
       cg.clear();
@@ -177,7 +177,7 @@ describe('dual-backend dispatch via codegraph index --scip', () => {
       documents: [{ relativePath: 'src/Wide.cs', occurrences: [] }],
     });
 
-    const cg = CodeGraph.initSync(tmpDir);
+    const cg = VBGraph.initSync(tmpDir);
     try {
       const result = await cg.indexAll({ scip: [scipPath] });
       expect(result.success).toBe(true);
@@ -233,14 +233,14 @@ describe('runScipAutoSpawn', () => {
   }
 
   it('spawns a detected indexer and returns the produced .scip', async () => {
-    const codegraphDir = path.join(tmpDir, '.codegraph');
-    fs.mkdirSync(codegraphDir, { recursive: true });
+    const vbgraphDir = path.join(tmpDir, '.vbgraph');
+    fs.mkdirSync(vbgraphDir, { recursive: true });
     const srcScip = path.join(tmpDir, 'src.scip');
     await writeCsScip(srcScip);
 
     const result = await runScipAutoSpawn({
       projectRoot: tmpDir,
-      codegraphDir,
+      vbgraphDir,
       languagesInRepo: new Set(['csharp']),
       detected: [makeFakeIndexer('scip-fake', ['csharp'], srcScip)],
     });
@@ -251,12 +251,12 @@ describe('runScipAutoSpawn', () => {
   });
 
   it('records a failure (no .scip) when an indexer exits non-zero', async () => {
-    const codegraphDir = path.join(tmpDir, '.codegraph');
-    fs.mkdirSync(codegraphDir, { recursive: true });
+    const vbgraphDir = path.join(tmpDir, '.vbgraph');
+    fs.mkdirSync(vbgraphDir, { recursive: true });
 
     const result = await runScipAutoSpawn({
       projectRoot: tmpDir,
-      codegraphDir,
+      vbgraphDir,
       languagesInRepo: new Set(['csharp']),
       detected: [makeFakeIndexer('scip-fail', ['csharp'], 'unused', { exitCode: 1 })],
     });
@@ -268,14 +268,14 @@ describe('runScipAutoSpawn', () => {
   });
 
   it('skips an indexer whose languages are absent from the repo', async () => {
-    const codegraphDir = path.join(tmpDir, '.codegraph');
-    fs.mkdirSync(codegraphDir, { recursive: true });
+    const vbgraphDir = path.join(tmpDir, '.vbgraph');
+    fs.mkdirSync(vbgraphDir, { recursive: true });
     const srcScip = path.join(tmpDir, 'src.scip');
     await writeCsScip(srcScip);
 
     const result = await runScipAutoSpawn({
       projectRoot: tmpDir,
-      codegraphDir,
+      vbgraphDir,
       languagesInRepo: new Set(['csharp']), // no java
       detected: [makeFakeIndexer('scip-java', ['java'], srcScip)],
     });
@@ -285,15 +285,15 @@ describe('runScipAutoSpawn', () => {
   });
 
   it('ignores a stale cached .scip when the indexer writes no output', async () => {
-    const codegraphDir = path.join(tmpDir, '.codegraph');
-    const cacheDir = path.join(codegraphDir, 'scip-cache');
+    const vbgraphDir = path.join(tmpDir, '.vbgraph');
+    const cacheDir = path.join(vbgraphDir, 'scip-cache');
     fs.mkdirSync(cacheDir, { recursive: true });
     // A stale artifact from a prior run sits at the deterministic cache path.
     await writeCsScip(path.join(cacheDir, 'scip-stale.scip'));
 
     const result = await runScipAutoSpawn({
       projectRoot: tmpDir,
-      codegraphDir,
+      vbgraphDir,
       languagesInRepo: new Set(['csharp']),
       // Exits 0 but writes nothing — must be a failure, not a stale ingest.
       detected: [makeFakeIndexer('scip-stale', ['csharp'], 'unused', { exitCode: 0 })],

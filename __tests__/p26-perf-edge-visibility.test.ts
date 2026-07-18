@@ -47,9 +47,9 @@ let qb: QueryBuilder;
 let backend: 'native' | 'wasm';
 
 beforeEach(() => {
-  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-p26perf-'));
+  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vbgraph-p26perf-'));
   projectRoot = path.join(tmpDir, 'project');
-  fs.mkdirSync(path.join(projectRoot, '.codegraph'), { recursive: true });
+  fs.mkdirSync(path.join(projectRoot, '.vbgraph'), { recursive: true });
   conn = DatabaseConnection.initialize(getDatabasePath(projectRoot));
   db = conn.getDb();
   qb = new QueryBuilder(db);

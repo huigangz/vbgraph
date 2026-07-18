@@ -22,7 +22,7 @@ import {
 } from '../src/installer/config-writer';
 
 function createTempDir(): string {
-  return fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-installer-test-'));
+  return fs.mkdtempSync(path.join(os.tmpdir(), 'vbgraph-installer-test-'));
 }
 
 function cleanupTempDir(dir: string): void {
@@ -56,7 +56,7 @@ describe('Installer Config Writer', () => {
 
       const content = JSON.parse(fs.readFileSync(claudeJson, 'utf-8'));
       expect(content.mcpServers).toBeDefined();
-      expect(content.mcpServers.codegraph).toBeDefined();
+      expect(content.mcpServers.vbgraph).toBeDefined();
     });
 
     it('should handle corrupted JSON by creating backup', () => {
@@ -81,14 +81,14 @@ describe('Installer Config Writer', () => {
       const backup = fs.readFileSync(claudeJson + '.backup', 'utf-8');
       expect(backup).toContain('this is not valid json');
 
-      // New file should be valid JSON with codegraph config
+      // New file should be valid JSON with vbgraph config
       const content = JSON.parse(fs.readFileSync(claudeJson, 'utf-8'));
-      expect(content.mcpServers.codegraph).toBeDefined();
+      expect(content.mcpServers.vbgraph).toBeDefined();
 
       warnSpy.mockRestore();
     });
 
-    it('should preserve existing valid config when adding codegraph', () => {
+    it('should preserve existing valid config when adding vbgraph', () => {
       const claudeJson = path.join(tempDir, '.claude.json');
       fs.writeFileSync(claudeJson, JSON.stringify({
         mcpServers: { other: { command: 'other-tool' } },
@@ -98,7 +98,7 @@ describe('Installer Config Writer', () => {
       writeMcpConfig('local');
 
       const content = JSON.parse(fs.readFileSync(claudeJson, 'utf-8'));
-      expect(content.mcpServers.codegraph).toBeDefined();
+      expect(content.mcpServers.vbgraph).toBeDefined();
       expect(content.mcpServers.other).toBeDefined();
       expect(content.customField).toBe('preserved');
     });
@@ -110,9 +110,9 @@ describe('Installer Config Writer', () => {
 
       expect(result.created).toBe(true);
       const content = fs.readFileSync(path.join(tempDir, '.claude', 'CLAUDE.md'), 'utf-8');
-      expect(content).toContain('<!-- CODEGRAPH_START -->');
-      expect(content).toContain('<!-- CODEGRAPH_END -->');
-      expect(content).toContain('## CodeGraph');
+      expect(content).toContain('<!-- VBGRAPH_START -->');
+      expect(content).toContain('<!-- VBGRAPH_END -->');
+      expect(content).toContain('## VBGraph');
     });
 
     it('should replace marked section on update', () => {
@@ -135,7 +135,7 @@ describe('Installer Config Writer', () => {
       expect(final).toContain('Custom content');
       expect(final).toContain('## Another Section');
       expect(final).toContain('More content');
-      expect(final).toContain('## CodeGraph');
+      expect(final).toContain('## VBGraph');
     });
 
     it('should use atomic writes (no temp files left behind)', () => {
@@ -148,7 +148,7 @@ describe('Installer Config Writer', () => {
     });
 
     it('should not overwrite content after unmarked section with ### subsections', () => {
-      // Create a CLAUDE.md with an unmarked CodeGraph section that has ### subsections
+      // Create a CLAUDE.md with an unmarked VBGraph section that has ### subsections
       // followed by another ## section
       const claudeDir = path.join(tempDir, '.claude');
       fs.mkdirSync(claudeDir, { recursive: true });
@@ -158,11 +158,11 @@ describe('Installer Config Writer', () => {
         '',
         'Some content',
         '',
-        '## CodeGraph',
+        '## VBGraph',
         '',
         '### Subsection A',
         '',
-        'Old codegraph content',
+        'Old vbgraph content',
         '',
         '### Subsection B',
         '',
@@ -178,27 +178,27 @@ describe('Installer Config Writer', () => {
       expect(result.updated).toBe(true);
 
       const final = fs.readFileSync(claudeMdPath, 'utf-8');
-      // The section after CodeGraph must be preserved
+      // The section after VBGraph must be preserved
       expect(final).toContain('## Important Section After');
       expect(final).toContain('This content must not be overwritten!');
       // Pre-existing section should also be preserved
       expect(final).toContain('## Pre-existing Section');
-      // New CodeGraph content should be present with markers
-      expect(final).toContain('<!-- CODEGRAPH_START -->');
-      expect(final).toContain('<!-- CODEGRAPH_END -->');
+      // New VBGraph content should be present with markers
+      expect(final).toContain('<!-- VBGRAPH_START -->');
+      expect(final).toContain('<!-- VBGRAPH_END -->');
     });
 
     it('should replace unmarked section without subsections', () => {
       const claudeDir = path.join(tempDir, '.claude');
       fs.mkdirSync(claudeDir, { recursive: true });
       const claudeMdPath = path.join(claudeDir, 'CLAUDE.md');
-      // Note: regex needs \n before ## CodeGraph, so prefix with another section
+      // Note: regex needs \n before ## VBGraph, so prefix with another section
       fs.writeFileSync(claudeMdPath, [
         '## Intro',
         '',
         'Preamble',
         '',
-        '## CodeGraph',
+        '## VBGraph',
         '',
         'Old simple content',
         '',
@@ -211,7 +211,7 @@ describe('Installer Config Writer', () => {
       writeClaudeMd('local');
 
       const final = fs.readFileSync(claudeMdPath, 'utf-8');
-      expect(final).toContain('<!-- CODEGRAPH_START -->');
+      expect(final).toContain('<!-- VBGRAPH_START -->');
       expect(final).toContain('## Next Section');
       expect(final).toContain('Must be preserved');
       expect(final).not.toContain('Old simple content');

@@ -15,7 +15,7 @@
  * violation) are caught at the write call site and DO NOT trigger
  * rollback — they're logged and skipped.
  *
- * See docs/plans/phase2/codegraph-framework-synthesize-augment.md § P1.4.
+ * See docs/plans/phase2/vbgraph-framework-synthesize-augment.md § P1.4.
  */
 
 import * as fs from 'fs';
@@ -71,7 +71,7 @@ export class Phase3Orchestrator {
     this.projectRoot = projectRoot;
     // Detection runs AGAINST THE POST-EXTRACTION DB, not the constructor-time
     // ReferenceResolver context. ReferenceResolver.initialize() runs in the
-    // CodeGraph constructor before any file is indexed, so its detect set is
+    // VBGraph constructor before any file is indexed, so its detect set is
     // built against an empty `getAllFiles()`. Phase 3 must re-detect to catch
     // scan-based resolvers (e.g. java spring scans for @SpringBootApplication).
     const ctx = this.buildPostExtractionContext();

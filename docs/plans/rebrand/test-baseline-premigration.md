@@ -31,3 +31,13 @@ tinypool 子进程在全部测试通过后的收尾阶段异常退出（Windows 
 
 rename 完成后的全量测试结果不得劣于：**818 passed / 29 skipped / 0 failed**。
 （skip 数与 unhandled error 允许持平；任何新增 fail 都定位到所在批次修复。）
+
+## 更新（2026-07-17，批 b–e 完成后）
+
+新仓库 fresh `npm install` 成功编译了 better-sqlite3（旧仓库没有原生模块），
+26 个 `skipIf(!HAS_SQLITE)` 测试被唤醒：25 个直接通过，1 个暴露**预先存在的
+过期断言**（`pr19-improvements` 断言 schema version 4，实际已是 7——多年被
+skip 掩盖），已修复（断言改 7 + 注释说明）。
+
+**新的有效基线：844 passed / 3 skipped / 0 failed**（48/49 文件，1 个已知
+tinypool teardown 噪音 error，退出码 1 属预期）。后续批次以此对照。

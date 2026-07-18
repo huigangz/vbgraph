@@ -116,7 +116,7 @@ describe('upsertGraphEdge', () => {
   let qb: QueryBuilder;
 
   beforeEach(() => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-p04edge-'));
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vbgraph-p04edge-'));
     conn = DatabaseConnection.initialize(path.join(tmpDir, 'e.db'));
     qb = new QueryBuilder(conn.getDb());
     for (const id of ['A', 'B']) {

@@ -1,5 +1,5 @@
 /**
- * CodeGraph Utilities
+ * VBGraph Utilities
  *
  * Common utility functions for memory management, concurrency, batching,
  * and security validation.
@@ -8,7 +8,7 @@
  *
  * @example
  * ```typescript
- * import { Mutex, processInBatches, MemoryMonitor, validatePathWithinRoot } from 'codegraph';
+ * import { Mutex, processInBatches, MemoryMonitor, validatePathWithinRoot } from 'vbgraph';
  *
  * // Use mutex for concurrent safety
  * const mutex = new Mutex();
@@ -216,8 +216,8 @@ export class FileLock {
           // large solutions can easily exceed any fixed age threshold.
           if (this.isProcessAlive(pid)) {
             throw new Error(
-              `CodeGraph database is locked by another process (PID ${pid}). ` +
-              `If this is stale, run 'codegraph unlock' or delete ${this.lockPath}`
+              `VBGraph database is locked by another process (PID ${pid}). ` +
+              `If this is stale, run 'vbgraph unlock' or delete ${this.lockPath}`
             );
           }
           // Dead PID — lock is abandoned, safe to remove regardless of age.
@@ -230,7 +230,7 @@ export class FileLock {
           const lockAge = Date.now() - stat.mtimeMs;
           if (lockAge < FileLock.UNPARSEABLE_LOCK_TIMEOUT_MS) {
             throw new Error(
-              `CodeGraph database lock file is malformed (no PID) and recent. ` +
+              `VBGraph database lock file is malformed (no PID) and recent. ` +
               `Wait or delete ${this.lockPath} manually.`
             );
           }
@@ -253,8 +253,8 @@ export class FileLock {
       if (err.code === 'EEXIST') {
         // Race condition: another process grabbed the lock between our check and write
         throw new Error(
-          'CodeGraph database is locked by another process. ' +
-          `If this is stale, run 'codegraph unlock' or delete ${this.lockPath}`
+          'VBGraph database is locked by another process. ' +
+          `If this is stale, run 'vbgraph unlock' or delete ${this.lockPath}`
         );
       }
       throw err;

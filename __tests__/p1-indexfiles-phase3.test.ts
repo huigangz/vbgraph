@@ -1,5 +1,5 @@
 /**
- * P1.5 PR-16 — `CodeGraph.indexFiles()` runs Phase 3.
+ * P1.5 PR-16 — `VBGraph.indexFiles()` runs Phase 3.
  *
  * Regression for Finding #4: `indexFiles()` previously delegated straight
  * to `ExtractionOrchestrator.indexFiles` and never invoked
@@ -36,12 +36,12 @@ function registerFake(r: FrameworkResolver): FrameworkResolver {
 }
 
 beforeEach(async () => {
-  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-indexfiles-p3-'));
-  fs.mkdirSync(path.join(tmpDir, '.codegraph'));
+  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vbgraph-indexfiles-p3-'));
+  fs.mkdirSync(path.join(tmpDir, '.vbgraph'));
   fs.writeFileSync(path.join(tmpDir, 'app.ts'), 'export const x = 1;\n');
 
-  const CodeGraph = (await import('../src/index')).default;
-  cg = CodeGraph.initSync(tmpDir, {
+  const VBGraph = (await import('../src/index')).default;
+  cg = VBGraph.initSync(tmpDir, {
     config: { include: ['**/*.ts'], exclude: [] },
   });
 });
@@ -53,7 +53,7 @@ afterEach(() => {
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
-describe('CodeGraph.indexFiles runs Phase 3', () => {
+describe('VBGraph.indexFiles runs Phase 3', () => {
   it('emits framework-synthesized nodes for files indexed via indexFiles()', async () => {
     registerFake({
       name: 'fake-indexfiles',

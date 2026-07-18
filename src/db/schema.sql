@@ -1,4 +1,4 @@
--- CodeGraph SQLite Schema
+-- VBGraph SQLite Schema
 -- This file is the full current schema (applied verbatim to fresh databases).
 -- Existing databases are upgraded incrementally by src/db/migrations.ts —
 -- every change here must have a matching migration entry there.

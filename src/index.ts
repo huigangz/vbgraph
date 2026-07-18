@@ -1,5 +1,5 @@
 /**
- * CodeGraph
+ * VBGraph
  *
  * A local-first code intelligence system that builds a semantic
  * knowledge graph from any codebase.
@@ -8,7 +8,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import {
-  CodeGraphConfig,
+  VBGraphConfig,
   Node,
   Edge,
   FileRecord,
@@ -41,7 +41,7 @@ import {
   createDirectory,
   removeDirectory,
   validateDirectory,
-  getCodeGraphDir,
+  getVBGraphDir,
 } from './directory';
 import {
   ExtractionOrchestrator,
@@ -84,16 +84,16 @@ export * from './types';
 export { getDatabasePath } from './db';
 export { getConfigPath } from './config';
 export {
-  getCodeGraphDir,
+  getVBGraphDir,
   isInitialized,
-  findNearestCodeGraphRoot,
-  CODEGRAPH_DIR,
+  findNearestVBGraphRoot,
+  VBGRAPH_DIR,
 } from './directory';
 export { IndexProgress, IndexResult, SyncResult } from './extraction';
 export { detectLanguage, isLanguageSupported, isGrammarLoaded, getSupportedLanguages, initGrammars, loadGrammarsForLanguages, loadAllGrammars } from './extraction';
 export { ResolutionResult } from './resolution';
 export {
-  CodeGraphError,
+  VBGraphError,
   FileError,
   ParseError,
   DatabaseError,
@@ -111,11 +111,11 @@ export { FileWatcher, WatchOptions } from './sync';
 export { MCPServer } from './mcp';
 
 /**
- * Options for initializing a new CodeGraph project
+ * Options for initializing a new VBGraph project
  */
 export interface InitOptions {
   /** Custom configuration overrides */
-  config?: Partial<CodeGraphConfig>;
+  config?: Partial<VBGraphConfig>;
 
   /** Whether to run initial indexing after init */
   index?: boolean;
@@ -125,7 +125,7 @@ export interface InitOptions {
 }
 
 /**
- * Options for opening an existing CodeGraph project
+ * Options for opening an existing VBGraph project
  */
 export interface OpenOptions {
   /** Whether to run sync if files have changed */
@@ -215,14 +215,14 @@ function tokenizeShellCommand(input: string): string[] {
 }
 
 /**
- * Main CodeGraph class
+ * Main VBGraph class
  *
  * Provides the primary interface for interacting with the code knowledge graph.
  */
-export class CodeGraph {
+export class VBGraph {
   private db: DatabaseConnection;
   private queries: QueryBuilder;
-  private config: CodeGraphConfig;
+  private config: VBGraphConfig;
   private projectRoot: string;
   private orchestrator: ExtractionOrchestrator;
   private resolver: ReferenceResolver;
@@ -242,7 +242,7 @@ export class CodeGraph {
   private constructor(
     db: DatabaseConnection,
     queries: QueryBuilder,
-    config: CodeGraphConfig,
+    config: VBGraphConfig,
     projectRoot: string
   ) {
     this.db = db;
@@ -250,7 +250,7 @@ export class CodeGraph {
     this.config = config;
     this.projectRoot = projectRoot;
     this.fileLock = new FileLock(
-      path.join(projectRoot, '.codegraph', 'codegraph.lock')
+      path.join(projectRoot, '.vbgraph', 'vbgraph.lock')
     );
     this.orchestrator = new ExtractionOrchestrator(projectRoot, config, queries);
     this.resolver = createResolver(projectRoot, queries);
@@ -268,21 +268,21 @@ export class CodeGraph {
   // ===========================================================================
 
   /**
-   * Initialize a new CodeGraph project
+   * Initialize a new VBGraph project
    *
-   * Creates the .CodeGraph directory, database, and configuration.
+   * Creates the .VBGraph directory, database, and configuration.
    *
    * @param projectRoot - Path to the project root directory
    * @param options - Initialization options
-   * @returns A new CodeGraph instance
+   * @returns A new VBGraph instance
    */
-  static async init(projectRoot: string, options: InitOptions = {}): Promise<CodeGraph> {
+  static async init(projectRoot: string, options: InitOptions = {}): Promise<VBGraph> {
     await initGrammars();
     const resolvedRoot = path.resolve(projectRoot);
 
     // Check if already initialized
     if (isInitialized(resolvedRoot)) {
-      throw new Error(`CodeGraph already initialized in ${resolvedRoot}`);
+      throw new Error(`VBGraph already initialized in ${resolvedRoot}`);
     }
 
     // Create directory structure
@@ -300,7 +300,7 @@ export class CodeGraph {
     const db = DatabaseConnection.initialize(dbPath);
     const queries = new QueryBuilder(db.getDb());
 
-    const instance = new CodeGraph(db, queries, config, resolvedRoot);
+    const instance = new VBGraph(db, queries, config, resolvedRoot);
 
     // Run initial indexing if requested
     if (options.index) {
@@ -313,12 +313,12 @@ export class CodeGraph {
   /**
    * Initialize synchronously (without indexing)
    */
-  static initSync(projectRoot: string, options: Omit<InitOptions, 'index' | 'onProgress'> = {}): CodeGraph {
+  static initSync(projectRoot: string, options: Omit<InitOptions, 'index' | 'onProgress'> = {}): VBGraph {
     const resolvedRoot = path.resolve(projectRoot);
 
     // Check if already initialized
     if (isInitialized(resolvedRoot)) {
-      throw new Error(`CodeGraph already initialized in ${resolvedRoot}`);
+      throw new Error(`VBGraph already initialized in ${resolvedRoot}`);
     }
 
     // Create directory structure
@@ -336,29 +336,29 @@ export class CodeGraph {
     const db = DatabaseConnection.initialize(dbPath);
     const queries = new QueryBuilder(db.getDb());
 
-    return new CodeGraph(db, queries, config, resolvedRoot);
+    return new VBGraph(db, queries, config, resolvedRoot);
   }
 
   /**
-   * Open an existing CodeGraph project
+   * Open an existing VBGraph project
    *
    * @param projectRoot - Path to the project root directory
    * @param options - Open options
-   * @returns A CodeGraph instance
+   * @returns A VBGraph instance
    */
-  static async open(projectRoot: string, options: OpenOptions = {}): Promise<CodeGraph> {
+  static async open(projectRoot: string, options: OpenOptions = {}): Promise<VBGraph> {
     await initGrammars();
     const resolvedRoot = path.resolve(projectRoot);
 
     // Check if initialized
     if (!isInitialized(resolvedRoot)) {
-      throw new Error(`CodeGraph not initialized in ${resolvedRoot}. Run init() first.`);
+      throw new Error(`VBGraph not initialized in ${resolvedRoot}. Run init() first.`);
     }
 
     // Validate directory structure
     const validation = validateDirectory(resolvedRoot);
     if (!validation.valid) {
-      throw new Error(`Invalid CodeGraph directory: ${validation.errors.join(', ')}`);
+      throw new Error(`Invalid VBGraph directory: ${validation.errors.join(', ')}`);
     }
 
     // Load configuration
@@ -369,7 +369,7 @@ export class CodeGraph {
     const db = DatabaseConnection.open(dbPath);
     const queries = new QueryBuilder(db.getDb());
 
-    const instance = new CodeGraph(db, queries, config, resolvedRoot);
+    const instance = new VBGraph(db, queries, config, resolvedRoot);
     instance.cleanupIncompleteIngestions();
 
     // Sync if requested
@@ -383,18 +383,18 @@ export class CodeGraph {
   /**
    * Open synchronously (without sync)
    */
-  static openSync(projectRoot: string): CodeGraph {
+  static openSync(projectRoot: string): VBGraph {
     const resolvedRoot = path.resolve(projectRoot);
 
     // Check if initialized
     if (!isInitialized(resolvedRoot)) {
-      throw new Error(`CodeGraph not initialized in ${resolvedRoot}. Run init() first.`);
+      throw new Error(`VBGraph not initialized in ${resolvedRoot}. Run init() first.`);
     }
 
     // Validate directory structure
     const validation = validateDirectory(resolvedRoot);
     if (!validation.valid) {
-      throw new Error(`Invalid CodeGraph directory: ${validation.errors.join(', ')}`);
+      throw new Error(`Invalid VBGraph directory: ${validation.errors.join(', ')}`);
     }
 
     // Load configuration
@@ -405,13 +405,13 @@ export class CodeGraph {
     const db = DatabaseConnection.open(dbPath);
     const queries = new QueryBuilder(db.getDb());
 
-    const instance = new CodeGraph(db, queries, config, resolvedRoot);
+    const instance = new VBGraph(db, queries, config, resolvedRoot);
     instance.cleanupIncompleteIngestions();
     return instance;
   }
 
   /**
-   * Check if a directory has been initialized as a CodeGraph project
+   * Check if a directory has been initialized as a VBGraph project
    */
   static isInitialized(projectRoot: string): boolean {
     return isInitialized(path.resolve(projectRoot));
@@ -505,7 +505,7 @@ export class CodeGraph {
             : undefined;
         const spawnResult = await runScipAutoSpawn({
           projectRoot: this.projectRoot,
-          codegraphDir: getCodeGraphDir(this.projectRoot),
+          vbgraphDir: getVBGraphDir(this.projectRoot),
           languagesInRepo,
           languageFilter,
           disabledIndexers: new Set(this.config.disabledScipIndexers ?? []),
@@ -515,7 +515,7 @@ export class CodeGraph {
       } catch (err) {
         // Lock contention or detection failure — degrade to tree-sitter.
         console.error(
-          `[codegraph] --scip-auto skipped: ${(err as Error).message}`
+          `[vbgraph] --scip-auto skipped: ${(err as Error).message}`
         );
       }
     }
@@ -591,7 +591,7 @@ export class CodeGraph {
       }
       if (overlapCount > 0) {
         console.error(
-          `[codegraph] --scip-auto: skipping ${path.basename(scipPath)} — ` +
+          `[vbgraph] --scip-auto: skipping ${path.basename(scipPath)} — ` +
             `its coverage is fully provided by an explicit --scip path.`
         );
         continue;
@@ -621,7 +621,7 @@ export class CodeGraph {
     for (const scipPath of explicitPaths) {
       await ingestScipFile(scipPath, this.projectRoot, ingestOptions);
     }
-    // Auto-spawned artifacts are CodeGraph's own output — any failure here
+    // Auto-spawned artifacts are VBGraph's own output — any failure here
     // (including a late conflict) degrades to tree-sitter rather than aborting.
     for (const scipPath of acceptedAutoPaths) {
       try {
@@ -638,7 +638,7 @@ export class CodeGraph {
 
     if (failures.length > 0) {
       try {
-        writeScipFailureLedger(getCodeGraphDir(this.projectRoot), failures);
+        writeScipFailureLedger(getVBGraphDir(this.projectRoot), failures);
       } catch {
         /* the ledger is best-effort surfacing, never fatal */
       }
@@ -660,8 +660,8 @@ export class CodeGraph {
    * NULL and a partially-mutated graph. This runs at `open()` / `openSync()`
    * time (migrations have already run) and scoped-deletes that partial data.
    * The cleanup is destructive, not restorative — SCIP coverage for the
-   * affected indexes must be regenerated (`codegraph index --scip` /
-   * `codegraph scip-refresh`).
+   * affected indexes must be regenerated (`vbgraph index --scip` /
+   * `vbgraph scip-refresh`).
    */
   private cleanupIncompleteIngestions(): void {
     const incomplete = this.queries.getIncompleteScipIngestions();
@@ -669,9 +669,9 @@ export class CodeGraph {
       return;
     }
     console.error(
-      `[codegraph] Found ${incomplete.length} incomplete SCIP ingestion(s) from a ` +
-        `prior crash. Cleaning up partial data; re-run 'codegraph index --scip' or ` +
-        `'codegraph scip-refresh' to restore SCIP coverage.`,
+      `[vbgraph] Found ${incomplete.length} incomplete SCIP ingestion(s) from a ` +
+        `prior crash. Cleaning up partial data; re-run 'vbgraph index --scip' or ` +
+        `'vbgraph scip-refresh' to restore SCIP coverage.`,
     );
     for (const scipIndexPath of incomplete) {
       this.queries.cleanupIncompleteScipIngestion(scipIndexPath);
@@ -679,7 +679,7 @@ export class CodeGraph {
   }
 
   /**
-   * Close the CodeGraph instance and release resources
+   * Close the VBGraph instance and release resources
    */
   close(): void {
     this.unwatch();
@@ -695,14 +695,14 @@ export class CodeGraph {
   /**
    * Get the current configuration
    */
-  getConfig(): CodeGraphConfig {
+  getConfig(): VBGraphConfig {
     return { ...this.config };
   }
 
   /**
    * Update configuration
    */
-  updateConfig(updates: Partial<CodeGraphConfig>): void {
+  updateConfig(updates: Partial<VBGraphConfig>): void {
     Object.assign(this.config, updates);
     saveConfig(this.projectRoot, this.config);
     // Recreate orchestrator and resolver with new config
@@ -942,7 +942,7 @@ export class CodeGraph {
    * paths (open / mid-stream / flush-time errors) are unreachable from
    * the real filesystem in a portable way, so the regression test
    * (`p2-review-fixes.test.ts`) monkey-patches this method on a single
-   * CodeGraph instance to inject a synthetic failure shape.
+   * VBGraph instance to inject a synthetic failure shape.
    *
    * Not part of the public API. Production behavior is identical to
    * `fs.createWriteStream(logPath, { flags: 'w' })`.
@@ -962,12 +962,12 @@ export class CodeGraph {
    * append + sidecar `lastError`) without demoting `phase` from `'ok'`.
    *
    * Concurrency: serialized by the in-process `indexMutex` AND the
-   * cross-process `FileLock` at `.codegraph/codegraph.lock`. Two
+   * cross-process `FileLock` at `.vbgraph/vbgraph.lock`. Two
    * processes invoking refresh concurrently: the late arrival returns
    * `phase = 'lock-failed'` without touching the database.
    *
-   * Writes spawn stdout/stderr to `.codegraph/logs/scip-refresh-<ts>.log`
-   * and a status sidecar at `.codegraph/scip-last-refresh.json`.
+   * Writes spawn stdout/stderr to `.vbgraph/logs/scip-refresh-<ts>.log`
+   * and a status sidecar at `.vbgraph/scip-last-refresh.json`.
    *
    * @returns ScipRefreshResult with phase + counts. The caller (CLI) maps
    *          phase to exit code:
@@ -980,7 +980,7 @@ export class CodeGraph {
     return this.indexMutex.withLock(async () => {
       const startedAt = Date.now();
       // Cross-process safety: indexMutex covers in-process concurrency, but
-      // two `codegraph` processes (e.g. CLI + scheduled refresh, or two
+      // two `vbgraph` processes (e.g. CLI + scheduled refresh, or two
       // scheduled jobs that overlapped) would otherwise race STAGE B
       // deletes against each other. Same FileLock pattern as indexAll / sync.
       try {
@@ -988,7 +988,7 @@ export class CodeGraph {
       } catch {
         return {
           phase: 'lock-failed',
-          error: 'Could not acquire file lock — another codegraph process is indexing or refreshing',
+          error: 'Could not acquire file lock — another vbgraph process is indexing or refreshing',
           spawnExitCode: null,
           scipPath: null,
           filesCovered: 0,
@@ -997,8 +997,8 @@ export class CodeGraph {
         };
       }
       try {
-      const codegraphDir = path.join(this.projectRoot, '.codegraph');
-      const logsDir = path.join(codegraphDir, 'logs');
+      const vbgraphDir = path.join(this.projectRoot, '.vbgraph');
+      const logsDir = path.join(vbgraphDir, 'logs');
       fs.mkdirSync(logsDir, { recursive: true });
 
       // 1. Spawn the configured indexer.
@@ -1030,7 +1030,7 @@ export class CodeGraph {
       const { spawn } = await import('child_process');
       // Indirection via instance method (not inlined fs.createWriteStream)
       // so refresh's log-stream failure paths can be exercised in tests by
-      // monkey-patching this single method on the CodeGraph instance.
+      // monkey-patching this single method on the VBGraph instance.
       // Production callers never touch this — it has the same behavior as
       // `fs.createWriteStream(logPath, { flags: 'w' })` and is not part of
       // the public API surface.
@@ -1307,13 +1307,13 @@ export class CodeGraph {
       // warning in TWO files schedulers always preserve:
       //   (a) Append to the per-run log file (which Task Scheduler at
       //       least pointed users at).
-      //   (b) Write `lastError` into the sidecar so `codegraph status`
-      //       and `cat .codegraph/scip-last-refresh.json` both surface it.
+      //   (b) Write `lastError` into the sidecar so `vbgraph status`
+      //       and `cat .vbgraph/scip-last-refresh.json` both surface it.
       if (errorString) {
         try {
           fs.appendFileSync(
             logPath,
-            `\n[codegraph derived-data warning ${new Date().toISOString()}]\n${errorString}\n`,
+            `\n[vbgraph derived-data warning ${new Date().toISOString()}]\n${errorString}\n`,
           );
         } catch {
           // Log append failure is non-fatal — stderr still has it.
@@ -1321,7 +1321,7 @@ export class CodeGraph {
       }
 
       // 4. Update the status sidecar.
-      const sidecarPath = path.join(codegraphDir, 'scip-last-refresh.json');
+      const sidecarPath = path.join(vbgraphDir, 'scip-last-refresh.json');
       const sidecar = {
         refreshedAt: new Date().toISOString(),
         scipPath,
@@ -1491,7 +1491,7 @@ export class CodeGraph {
   /**
    * Decomposed staleness counts — hidden-stale (shadow active) vs visible-stale
    * (needs refresh, no grammar) vs fresh. Read raw `stale`/`staleness_visible`
-   * columns; designed for `codegraph status` (P2.4) and diagnostics. The
+   * columns; designed for `vbgraph status` (P2.4) and diagnostics. The
    * three categories together cover every row.
    */
   getStaleSummary(): StaleSummary {
@@ -1503,7 +1503,7 @@ export class CodeGraph {
    * (SCIP), `scope-resolved`, `syntactic` (tree-sitter), `inferred`
    * (heuristic / framework), `ambiguous` (no provenance). Counts follow the
    * default freshness + endpoint-visibility contract, so they sum to
-   * `getStats().edgeCount`. Used by `codegraph status`.
+   * `getStats().edgeCount`. Used by `vbgraph status`.
    */
   getEdgeConfidenceTierCounts(): Record<ConfidenceTier, number> {
     const counts: Record<ConfidenceTier, number> = {
@@ -1525,7 +1525,7 @@ export class CodeGraph {
   /**
    * Review fix #4 (Decision 7 — required diagnostic): count of edges
    * hidden ONLY because at least one endpoint node is hidden-stale.
-   * Edge-row freshness still applies. Used by `codegraph status` to
+   * Edge-row freshness still applies. Used by `vbgraph status` to
    * report the "Dangling against stale" line — the count of public-API
    * results suppressed by the endpoint-visibility filter beyond what
    * row-level staleness alone would hide.
@@ -1535,16 +1535,16 @@ export class CodeGraph {
   }
 
   /**
-   * Read the SCIP refresh sidecar at `.codegraph/scip-last-refresh.json` —
+   * Read the SCIP refresh sidecar at `.vbgraph/scip-last-refresh.json` —
    * the status record written by the most recent successful
-   * `CodeGraph.refreshScip` call.
+   * `VBGraph.refreshScip` call.
    *
    * Returns `null` if the file is absent, unreadable, or malformed.
    * Status (P2.4.4) treats all three cases as "never refreshed"; users
    * needing the distinction can read the sidecar directly.
    */
   getLastScipRefresh(): ScipLastRefresh | null {
-    const sidecarPath = path.join(this.projectRoot, '.codegraph', 'scip-last-refresh.json');
+    const sidecarPath = path.join(this.projectRoot, '.vbgraph', 'scip-last-refresh.json');
     try {
       if (!fs.existsSync(sidecarPath)) return null;
       const raw = fs.readFileSync(sidecarPath, 'utf-8');
@@ -1586,7 +1586,7 @@ export class CodeGraph {
    *  - `SCIP_INDEXERS` spec — install hints for languages where no
    *    indexer is currently installed.
    *
-   * Used by `codegraph status` (P2.4.4) to render the per-language tier
+   * Used by `vbgraph status` (P2.4.4) to render the per-language tier
    * display. Returns languages sorted by file count descending.
    *
    * Cost: one grouped SQL query (`getNodeCountsByLanguageAndProvenance`)
@@ -1651,8 +1651,8 @@ export class CodeGraph {
   /**
    * Active SQLite backend for this project's connection. `wasm` means
    * the native better-sqlite3 install failed and the WASM fallback is
-   * serving requests at 5-10x the latency. Surfaced via `codegraph
-   * status` and the `codegraph_status` MCP tool.
+   * serving requests at 5-10x the latency. Surfaced via `vbgraph
+   * status` and the `vbgraph_status` MCP tool.
    */
   getBackend(): import('./db').SqliteBackend {
     return this.db.getBackend();
@@ -1695,7 +1695,7 @@ export class CodeGraph {
    * For each `framework:<name>` provenance ever observed on an edge in the
    * graph, return the count of edges in which that provenance contributes
    * (counts membership in `provenances[]`, NOT primary `provenance`). Used by
-   * `codegraph status` to surface per-framework edge contributions including
+   * `vbgraph status` to surface per-framework edge contributions including
    * merged-edge cases where SCIP / tree-sitter is the primary provenance and
    * a framework resolver is a non-primary contributor.
    */
@@ -2025,10 +2025,10 @@ export class CodeGraph {
   }
 
   /**
-   * Completely remove CodeGraph from the project.
-   * This closes the database and deletes the .CodeGraph directory.
+   * Completely remove VBGraph from the project.
+   * This closes the database and deletes the .VBGraph directory.
    *
-   * WARNING: This permanently deletes all CodeGraph data for the project.
+   * WARNING: This permanently deletes all VBGraph data for the project.
    */
   uninitialize(): void {
     this.close();
@@ -2037,4 +2037,4 @@ export class CodeGraph {
 }
 
 // Default export
-export default CodeGraph;
+export default VBGraph;

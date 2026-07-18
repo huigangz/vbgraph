@@ -15,7 +15,7 @@ import {
   WasmDatabaseAdapter,
 } from '../src/db/sqlite-adapter';
 import { DatabaseConnection } from '../src/db';
-import { CodeGraph } from '../src';
+import { VBGraph } from '../src';
 
 describe('buildWasmFallbackBanner — fix-recipe content', () => {
   it('includes the macOS / Linux / cross-platform fix commands', () => {
@@ -26,7 +26,7 @@ describe('buildWasmFallbackBanner — fix-recipe content', () => {
     expect(banner).toContain('apt install build-essential');
     expect(banner).toContain('npm rebuild better-sqlite3');
     expect(banner).toContain('npm install better-sqlite3 --save');
-    expect(banner).toContain('codegraph status');
+    expect(banner).toContain('vbgraph status');
   });
 
   it('appends the native load error when one is provided', () => {
@@ -58,7 +58,7 @@ describe('DatabaseConnection — per-instance backend reporting', () => {
   let dir: string;
 
   beforeEach(() => {
-    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-backend-'));
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vbgraph-backend-'));
   });
 
   afterEach(() => {
@@ -75,9 +75,9 @@ describe('DatabaseConnection — per-instance backend reporting', () => {
     conn.close();
   });
 
-  it('CodeGraph.getBackend() delegates to the underlying DatabaseConnection', async () => {
+  it('VBGraph.getBackend() delegates to the underlying DatabaseConnection', async () => {
     fs.writeFileSync(path.join(dir, 'x.ts'), `export function x(): void {}\n`);
-    const cg = await CodeGraph.init(dir, { index: true });
+    const cg = await VBGraph.init(dir, { index: true });
     try {
       expect(['native', 'wasm']).toContain(cg.getBackend());
     } finally {
@@ -90,7 +90,7 @@ describe('WasmDatabaseAdapter — forced wasm regressions', () => {
   let dir: string;
 
   beforeEach(() => {
-    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-wasm-'));
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vbgraph-wasm-'));
   });
 
   afterEach(() => {

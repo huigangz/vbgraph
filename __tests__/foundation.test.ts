@@ -1,23 +1,23 @@
 /**
  * Foundation Tests
  *
- * Tests for the CodeGraph foundation layer.
+ * Tests for the VBGraph foundation layer.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { CodeGraph } from '../src';
+import { VBGraph } from '../src';
 import { DEFAULT_CONFIG, Node, Edge } from '../src/types';
 import { loadConfig, saveConfig } from '../src/config';
-import { isInitialized, getCodeGraphDir, validateDirectory } from '../src/directory';
+import { isInitialized, getVBGraphDir, validateDirectory } from '../src/directory';
 import { DatabaseConnection, getDatabasePath } from '../src/db';
 import { CURRENT_SCHEMA_VERSION } from '../src/db/migrations';
 
 // Create a temporary directory for each test
 function createTempDir(): string {
-  return fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-test-'));
+  return fs.mkdtempSync(path.join(os.tmpdir(), 'vbgraph-test-'));
 }
 
 // Clean up temporary directory
@@ -27,7 +27,7 @@ function cleanupTempDir(dir: string): void {
   }
 }
 
-describe('CodeGraph Foundation', () => {
+describe('VBGraph Foundation', () => {
   let tempDir: string;
 
   beforeEach(() => {
@@ -40,19 +40,19 @@ describe('CodeGraph Foundation', () => {
 
   describe('Initialization', () => {
     it('should initialize a new project', () => {
-      const cg = CodeGraph.initSync(tempDir);
+      const cg = VBGraph.initSync(tempDir);
 
-      expect(CodeGraph.isInitialized(tempDir)).toBe(true);
-      expect(fs.existsSync(getCodeGraphDir(tempDir))).toBe(true);
+      expect(VBGraph.isInitialized(tempDir)).toBe(true);
+      expect(fs.existsSync(getVBGraphDir(tempDir))).toBe(true);
       expect(fs.existsSync(getDatabasePath(tempDir))).toBe(true);
 
       cg.close();
     });
 
-    it('should create .gitignore in .CodeGraph directory', () => {
-      const cg = CodeGraph.initSync(tempDir);
+    it('should create .gitignore in .VBGraph directory', () => {
+      const cg = VBGraph.initSync(tempDir);
 
-      const gitignorePath = path.join(getCodeGraphDir(tempDir), '.gitignore');
+      const gitignorePath = path.join(getVBGraphDir(tempDir), '.gitignore');
       expect(fs.existsSync(gitignorePath)).toBe(true);
 
       const content = fs.readFileSync(gitignorePath, 'utf-8');
@@ -62,9 +62,9 @@ describe('CodeGraph Foundation', () => {
     });
 
     it('should create config.json with defaults', () => {
-      const cg = CodeGraph.initSync(tempDir);
+      const cg = VBGraph.initSync(tempDir);
 
-      const configPath = path.join(getCodeGraphDir(tempDir), 'config.json');
+      const configPath = path.join(getVBGraphDir(tempDir), 'config.json');
       expect(fs.existsSync(configPath)).toBe(true);
 
       const config = cg.getConfig();
@@ -76,14 +76,14 @@ describe('CodeGraph Foundation', () => {
     });
 
     it('should throw if already initialized', () => {
-      const cg = CodeGraph.initSync(tempDir);
+      const cg = VBGraph.initSync(tempDir);
       cg.close();
 
-      expect(() => CodeGraph.initSync(tempDir)).toThrow(/already initialized/i);
+      expect(() => VBGraph.initSync(tempDir)).toThrow(/already initialized/i);
     });
 
     it('should accept custom config options', () => {
-      const cg = CodeGraph.initSync(tempDir, {
+      const cg = VBGraph.initSync(tempDir, {
         config: {
           maxFileSize: 500000,
           extractDocstrings: false,
@@ -101,26 +101,26 @@ describe('CodeGraph Foundation', () => {
   describe('Opening Projects', () => {
     it('should open an existing project', () => {
       // First initialize
-      const cg1 = CodeGraph.initSync(tempDir);
+      const cg1 = VBGraph.initSync(tempDir);
       cg1.close();
 
       // Then open
-      const cg2 = CodeGraph.openSync(tempDir);
+      const cg2 = VBGraph.openSync(tempDir);
       expect(cg2.getProjectRoot()).toBe(path.resolve(tempDir));
       cg2.close();
     });
 
     it('should throw if not initialized', () => {
-      expect(() => CodeGraph.openSync(tempDir)).toThrow(/not initialized/i);
+      expect(() => VBGraph.openSync(tempDir)).toThrow(/not initialized/i);
     });
 
     it('should preserve configuration across open/close', () => {
-      const cg1 = CodeGraph.initSync(tempDir, {
+      const cg1 = VBGraph.initSync(tempDir, {
         config: { maxFileSize: 123456 },
       });
       cg1.close();
 
-      const cg2 = CodeGraph.openSync(tempDir);
+      const cg2 = VBGraph.openSync(tempDir);
       expect(cg2.getConfig().maxFileSize).toBe(123456);
       cg2.close();
     });
@@ -128,19 +128,19 @@ describe('CodeGraph Foundation', () => {
 
   describe('Static Methods', () => {
     it('isInitialized should return false for new directory', () => {
-      expect(CodeGraph.isInitialized(tempDir)).toBe(false);
+      expect(VBGraph.isInitialized(tempDir)).toBe(false);
     });
 
     it('isInitialized should return true after init', () => {
-      const cg = CodeGraph.initSync(tempDir);
-      expect(CodeGraph.isInitialized(tempDir)).toBe(true);
+      const cg = VBGraph.initSync(tempDir);
+      expect(VBGraph.isInitialized(tempDir)).toBe(true);
       cg.close();
     });
   });
 
   describe('Database', () => {
     it('should create database with correct schema', () => {
-      const cg = CodeGraph.initSync(tempDir);
+      const cg = VBGraph.initSync(tempDir);
 
       // Check that we can get stats (requires tables to exist)
       const stats = cg.getStats();
@@ -152,7 +152,7 @@ describe('CodeGraph Foundation', () => {
     });
 
     it('should return correct database size', () => {
-      const cg = CodeGraph.initSync(tempDir);
+      const cg = VBGraph.initSync(tempDir);
       const stats = cg.getStats();
 
       // Database should have some size (at least the schema)
@@ -162,7 +162,7 @@ describe('CodeGraph Foundation', () => {
     });
 
     it('should support optimize operation', () => {
-      const cg = CodeGraph.initSync(tempDir);
+      const cg = VBGraph.initSync(tempDir);
 
       // Should not throw
       expect(() => cg.optimize()).not.toThrow();
@@ -171,7 +171,7 @@ describe('CodeGraph Foundation', () => {
     });
 
     it('should support clear operation', () => {
-      const cg = CodeGraph.initSync(tempDir);
+      const cg = VBGraph.initSync(tempDir);
 
       // Should not throw
       expect(() => cg.clear()).not.toThrow();
@@ -185,7 +185,7 @@ describe('CodeGraph Foundation', () => {
 
   describe('Configuration', () => {
     it('should load and merge config with defaults', () => {
-      const cg = CodeGraph.initSync(tempDir);
+      const cg = VBGraph.initSync(tempDir);
       cg.close();
 
       const config = loadConfig(tempDir);
@@ -194,7 +194,7 @@ describe('CodeGraph Foundation', () => {
     });
 
     it('should update configuration', () => {
-      const cg = CodeGraph.initSync(tempDir);
+      const cg = VBGraph.initSync(tempDir);
 
       cg.updateConfig({ maxFileSize: 999999 });
 
@@ -210,7 +210,7 @@ describe('CodeGraph Foundation', () => {
 
   describe('Directory Management', () => {
     it('should validate directory structure', () => {
-      const cg = CodeGraph.initSync(tempDir);
+      const cg = VBGraph.initSync(tempDir);
       cg.close();
 
       const validation = validateDirectory(tempDir);
@@ -226,30 +226,30 @@ describe('CodeGraph Foundation', () => {
   });
 
   describe('Uninitialize', () => {
-    it('should remove .CodeGraph directory', () => {
-      const cg = CodeGraph.initSync(tempDir);
+    it('should remove .VBGraph directory', () => {
+      const cg = VBGraph.initSync(tempDir);
 
       cg.uninitialize();
 
-      expect(fs.existsSync(getCodeGraphDir(tempDir))).toBe(false);
-      expect(CodeGraph.isInitialized(tempDir)).toBe(false);
+      expect(fs.existsSync(getVBGraphDir(tempDir))).toBe(false);
+      expect(VBGraph.isInitialized(tempDir)).toBe(false);
     });
   });
 
   describe('Close/Destroy', () => {
-    it('should close database but keep .CodeGraph directory', () => {
-      const cg = CodeGraph.initSync(tempDir);
+    it('should close database but keep .VBGraph directory', () => {
+      const cg = VBGraph.initSync(tempDir);
 
       cg.destroy(); // destroy is alias for close
 
-      expect(fs.existsSync(getCodeGraphDir(tempDir))).toBe(true);
-      expect(CodeGraph.isInitialized(tempDir)).toBe(true);
+      expect(fs.existsSync(getVBGraphDir(tempDir))).toBe(true);
+      expect(VBGraph.isInitialized(tempDir)).toBe(true);
     });
   });
 
   describe('Graph Query Methods', () => {
     it('should throw "Node not found" for non-existent nodes', () => {
-      const cg = CodeGraph.initSync(tempDir);
+      const cg = VBGraph.initSync(tempDir);
 
       // getContext throws for non-existent nodes
       expect(() => cg.getContext('non-existent')).toThrow(/not found/i);
@@ -258,7 +258,7 @@ describe('CodeGraph Foundation', () => {
     });
 
     it('should return empty results for non-existent nodes', () => {
-      const cg = CodeGraph.initSync(tempDir);
+      const cg = VBGraph.initSync(tempDir);
 
       // These methods return empty results instead of throwing
       const traverseResult = cg.traverse('non-existent');
@@ -333,11 +333,11 @@ describe('Database Connection', () => {
 
 describe('Query Builder', () => {
   let tempDir: string;
-  let cg: CodeGraph;
+  let cg: VBGraph;
 
   beforeEach(() => {
     tempDir = createTempDir();
-    cg = CodeGraph.initSync(tempDir);
+    cg = VBGraph.initSync(tempDir);
   });
 
   afterEach(() => {

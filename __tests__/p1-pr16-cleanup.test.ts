@@ -83,7 +83,7 @@ describe('PR-16 — getFrameworkEdgeContributionCounts SQL', () => {
   let q: QueryBuilder;
 
   beforeEach(() => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-pr16-'));
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vbgraph-pr16-'));
     conn = DatabaseConnection.initialize(path.join(tmpDir, 'g.db'));
     q = new QueryBuilder(conn.getDb());
   });

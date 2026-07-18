@@ -1,5 +1,5 @@
 /**
- * CodeGraph Interactive Installer
+ * VBGraph Interactive Installer
  *
  * Multi-target: writes MCP server config + instructions for the
  * agents the user picks (Claude Code, Cursor, Codex CLI, opencode).
@@ -71,7 +71,7 @@ export interface RunInstallerOptions {
 }
 
 /**
- * Interactive entry point — preserves the historical UX (`codegraph
+ * Interactive entry point — preserves the historical UX (`vbgraph
  * install` with no args goes through the prompts), but now starts
  * the targets multi-select pre-populated with detected agents.
  */
@@ -82,7 +82,7 @@ export async function runInstaller(): Promise<void> {
 export async function runInstallerWithOptions(opts: RunInstallerOptions): Promise<void> {
   const clack = await importESM('@clack/prompts');
 
-  clack.intro(`CodeGraph v${getVersion()}`);
+  clack.intro(`VBGraph v${getVersion()}`);
 
   // --yes implies all defaults; explicit flags still win.
   const useDefaults = opts.yes === true;
@@ -98,11 +98,11 @@ export async function runInstallerWithOptions(opts: RunInstallerOptions): Promis
     return;
   }
 
-  // Step 2: install the codegraph npm package on PATH (always offered;
+  // Step 2: install the vbgraph npm package on PATH (always offered;
   // matches existing behavior). Skipped when --yes (assume present).
   if (!useDefaults) {
     const shouldInstallGlobally = await clack.confirm({
-      message: 'Install the codegraph CLI on your PATH? (Required so agents can launch the MCP server)',
+      message: 'Install the vbgraph CLI on your PATH? (Required so agents can launch the MCP server)',
       initialValue: true,
     });
     if (clack.isCancel(shouldInstallGlobally)) {
@@ -111,13 +111,13 @@ export async function runInstallerWithOptions(opts: RunInstallerOptions): Promis
     }
     if (shouldInstallGlobally) {
       const s = clack.spinner();
-      s.start('Installing codegraph CLI...');
+      s.start('Installing vbgraph CLI...');
       try {
-        execSync('npm install -g @colbymchenry/codegraph', { stdio: 'pipe' });
-        s.stop('Installed codegraph CLI on PATH');
+        execSync('npm install -g vbgraph', { stdio: 'pipe' });
+        s.stop('Installed vbgraph CLI on PATH');
       } catch {
         s.stop('Could not install (permission denied)');
-        clack.log.warn('Try: sudo npm install -g @colbymchenry/codegraph');
+        clack.log.warn('Try: sudo npm install -g vbgraph');
       }
     } else {
       clack.log.info('Skipped CLI install — agents will not be able to launch the MCP server without it');
@@ -164,7 +164,7 @@ export async function runInstallerWithOptions(opts: RunInstallerOptions): Promis
     autoAllow = true;
   } else if (targets.some((t) => t.id === 'claude')) {
     const ans = await clack.confirm({
-      message: 'Auto-allow CodeGraph commands? (Skips permission prompts in Claude Code)',
+      message: 'Auto-allow VBGraph commands? (Skips permission prompts in Claude Code)',
       initialValue: true,
     });
     if (clack.isCancel(ans)) {
@@ -202,11 +202,11 @@ export async function runInstallerWithOptions(opts: RunInstallerOptions): Promis
   }
 
   if (location === 'global') {
-    clack.note('cd your-project\ncodegraph init -i', 'Quick start');
+    clack.note('cd your-project\nvbgraph init -i', 'Quick start');
   }
 
   const finalNote = targets.length > 0
-    ? `Done! Restart your agent${targets.length > 1 ? 's' : ''} to use CodeGraph.`
+    ? `Done! Restart your agent${targets.length > 1 ? 's' : ''} to use VBGraph.`
     : 'Done!';
   clack.outro(finalNote);
 }
@@ -214,11 +214,11 @@ export async function runInstallerWithOptions(opts: RunInstallerOptions): Promis
 /**
  * For every target that has a global config and exposes
  * `wireProjectSurfaces`, write its project-local surfaces (e.g.
- * Cursor's `.cursor/rules/codegraph.mdc`). Idempotent — runs
+ * Cursor's `.cursor/rules/vbgraph.mdc`). Idempotent — runs
  * silently when there's nothing to write.
  *
- * Called by `codegraph init` so that a user who ran
- * `codegraph install` once globally doesn't have to re-run it per
+ * Called by `vbgraph init` so that a user who ran
+ * `vbgraph install` once globally doesn't have to re-run it per
  * project to get full agent support.
  *
  * Returns the list of `(target, file)` pairs that were created or
@@ -279,7 +279,7 @@ async function resolveTargets(
   const initial = initialValues.length > 0 ? initialValues : ['claude'];
 
   const choice = await clack.multiselect<string>({
-    message: 'Which agents should CodeGraph configure?',
+    message: 'Which agents should VBGraph configure?',
     options: ALL_TARGETS.map((t) => {
       const det = detected.find(({ target }) => target.id === t.id)!.detection;
       const flag = det.installed ? '(detected)' : '(not found)';
@@ -304,31 +304,31 @@ async function resolveTargets(
 }
 
 /**
- * Initialize CodeGraph in the current project (for local installs).
+ * Initialize VBGraph in the current project (for local installs).
  * Unchanged from the pre-refactor version — agent-agnostic by nature.
  */
 async function initializeLocalProject(clack: typeof import('@clack/prompts')): Promise<void> {
   const projectPath = process.cwd();
 
-  let CodeGraph: typeof import('../index').default;
+  let VBGraph: typeof import('../index').default;
   try {
-    CodeGraph = (await import('../index')).default;
+    VBGraph = (await import('../index')).default;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     clack.log.error(`Could not load native modules: ${msg}`);
-    clack.log.info('Skipping project initialization. Run "codegraph init -i" later.');
+    clack.log.info('Skipping project initialization. Run "vbgraph init -i" later.');
     return;
   }
 
   // Check if already initialized
-  if (CodeGraph.isInitialized(projectPath)) {
-    clack.log.info('CodeGraph already initialized in this project');
+  if (VBGraph.isInitialized(projectPath)) {
+    clack.log.info('VBGraph already initialized in this project');
     return;
   }
 
   // Initialize
-  const cg = await CodeGraph.init(projectPath);
-  clack.log.success('Created .codegraph/ directory');
+  const cg = await VBGraph.init(projectPath);
+  clack.log.success('Created .vbgraph/ directory');
 
   // Index the project with shimmer progress (worker thread for smooth animation)
   const { createShimmerProgress } = await import('../ui/shimmer-progress');

@@ -30,7 +30,7 @@ import { writeSyntheticScip, truncateScipFile } from './helpers/scip-fixtures';
 let tmpDir: string;
 
 beforeEach(() => {
-  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-p04c-'));
+  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vbgraph-p04c-'));
 });
 
 afterEach(() => {

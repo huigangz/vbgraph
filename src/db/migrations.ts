@@ -138,8 +138,8 @@ const migrations: Migration[] = [
       // Existing edges keep their original provenances — scope-resolution is
       // not back-filled (would require a full re-index). See plan P0.9.
       console.error(
-        "[codegraph] Migrated DB to schema v5 (SCIP ingestion). Existing edges " +
-          "retain their original provenances; run 'codegraph index' to upgrade incrementally.",
+        "[vbgraph] Migrated DB to schema v5 (SCIP ingestion). Existing edges " +
+          "retain their original provenances; run 'vbgraph index' to upgrade incrementally.",
       );
     },
   },

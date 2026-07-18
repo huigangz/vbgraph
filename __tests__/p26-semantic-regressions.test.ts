@@ -32,9 +32,9 @@ let db: SqliteDatabase;
 let qb: QueryBuilder;
 
 beforeEach(() => {
-  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-p26sem-'));
+  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vbgraph-p26sem-'));
   projectRoot = path.join(tmpDir, 'project');
-  fs.mkdirSync(path.join(projectRoot, '.codegraph'), { recursive: true });
+  fs.mkdirSync(path.join(projectRoot, '.vbgraph'), { recursive: true });
   conn = DatabaseConnection.initialize(getDatabasePath(projectRoot));
   db = conn.getDb();
   qb = new QueryBuilder(db);

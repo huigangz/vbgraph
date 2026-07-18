@@ -1,14 +1,14 @@
 /**
- * CodeGraph MCP Server
+ * VBGraph MCP Server
  *
- * Model Context Protocol server that exposes CodeGraph functionality
+ * Model Context Protocol server that exposes VBGraph functionality
  * as tools for AI assistants like Claude.
  *
  * @module mcp
  *
  * @example
  * ```typescript
- * import { MCPServer } from 'codegraph';
+ * import { MCPServer } from 'vbgraph';
  *
  * const server = new MCPServer('/path/to/project');
  * await server.start();
@@ -16,7 +16,7 @@
  */
 
 import * as path from 'path';
-import CodeGraph, { findNearestCodeGraphRoot } from '../index';
+import VBGraph, { findNearestVBGraphRoot } from '../index';
 import { StdioTransport, JsonRpcRequest, JsonRpcNotification, ErrorCodes } from './transport';
 import { tools, ToolHandler } from './tools';
 import { SERVER_INSTRUCTIONS } from './server-instructions';
@@ -44,7 +44,7 @@ function fileUriToPath(uri: string): string {
  * MCP Server Info
  */
 const SERVER_INFO = {
-  name: 'codegraph',
+  name: 'vbgraph',
   version: '0.1.0',
 };
 
@@ -54,14 +54,14 @@ const SERVER_INFO = {
 const PROTOCOL_VERSION = '2024-11-05';
 
 /**
- * MCP Server for CodeGraph
+ * MCP Server for VBGraph
  *
- * Implements the Model Context Protocol to expose CodeGraph
+ * Implements the Model Context Protocol to expose VBGraph
  * functionality as tools that can be called by AI assistants.
  */
 export class MCPServer {
   private transport: StdioTransport;
-  private cg: CodeGraph | null = null;
+  private cg: VBGraph | null = null;
   private toolHandler: ToolHandler;
   private projectPath: string | null;
   // In-flight background init kicked off from handleInitialize. Tracked so the
@@ -78,7 +78,7 @@ export class MCPServer {
   /**
    * Start the MCP server
    *
-   * Note: CodeGraph initialization is deferred until the initialize request
+   * Note: VBGraph initialization is deferred until the initialize request
    * is received, which includes the rootUri from the client.
    */
   async start(): Promise<void> {
@@ -97,9 +97,9 @@ export class MCPServer {
   }
 
   /**
-   * Try to initialize CodeGraph for the default project.
+   * Try to initialize VBGraph for the default project.
    *
-   * Walks up parent directories to find the nearest .codegraph/ folder,
+   * Walks up parent directories to find the nearest .vbgraph/ folder,
    * similar to how git finds .git/ directories.
    *
    * If initialization fails, the error is recorded but the server continues
@@ -107,8 +107,8 @@ export class MCPServer {
    * are still possible.
    */
   private async tryInitializeDefault(projectPath: string): Promise<void> {
-    // Walk up parent directories to find nearest .codegraph/
-    const resolvedRoot = findNearestCodeGraphRoot(projectPath);
+    // Walk up parent directories to find nearest .vbgraph/
+    const resolvedRoot = findNearestVBGraphRoot(projectPath);
 
     if (!resolvedRoot) {
       this.projectPath = projectPath;
@@ -118,13 +118,13 @@ export class MCPServer {
     this.projectPath = resolvedRoot;
 
     try {
-      this.cg = await CodeGraph.open(resolvedRoot);
-      this.toolHandler.setDefaultCodeGraph(this.cg);
+      this.cg = await VBGraph.open(resolvedRoot);
+      this.toolHandler.setDefaultVBGraph(this.cg);
       this.startWatching();
     } catch (err) {
       // Log the error so transient failures are diagnosable (see issue #47)
       const msg = err instanceof Error ? err.message : String(err);
-      process.stderr.write(`[CodeGraph MCP] Failed to open project at ${resolvedRoot}: ${msg}\n`);
+      process.stderr.write(`[VBGraph MCP] Failed to open project at ${resolvedRoot}: ${msg}\n`);
     }
   }
 
@@ -144,11 +144,11 @@ export class MCPServer {
     }
 
     // Already initialized successfully
-    if (this.toolHandler.hasDefaultCodeGraph()) return;
+    if (this.toolHandler.hasDefaultVBGraph()) return;
     // No project path to retry with
     if (!this.projectPath) return;
 
-    const resolvedRoot = findNearestCodeGraphRoot(this.projectPath);
+    const resolvedRoot = findNearestVBGraphRoot(this.projectPath);
     if (!resolvedRoot) return;
 
     try {
@@ -157,9 +157,9 @@ export class MCPServer {
         try { this.cg.close(); } catch { /* ignore */ }
         this.cg = null;
       }
-      this.cg = CodeGraph.openSync(resolvedRoot);
+      this.cg = VBGraph.openSync(resolvedRoot);
       this.projectPath = resolvedRoot;
-      this.toolHandler.setDefaultCodeGraph(this.cg);
+      this.toolHandler.setDefaultVBGraph(this.cg);
       this.startWatching();
     } catch {
       // Still failing — will retry on next tool call
@@ -167,7 +167,7 @@ export class MCPServer {
   }
 
   /**
-   * Start file watching on the active CodeGraph instance.
+   * Start file watching on the active VBGraph instance.
    * Logs sync activity to stderr for diagnostics.
    */
   private startWatching(): void {
@@ -177,17 +177,17 @@ export class MCPServer {
       onSyncComplete: (result) => {
         if (result.filesChanged > 0) {
           process.stderr.write(
-            `[CodeGraph MCP] Auto-synced ${result.filesChanged} file(s) in ${result.durationMs}ms\n`
+            `[VBGraph MCP] Auto-synced ${result.filesChanged} file(s) in ${result.durationMs}ms\n`
           );
         }
       },
       onSyncError: (err) => {
-        process.stderr.write(`[CodeGraph MCP] Auto-sync error: ${err.message}\n`);
+        process.stderr.write(`[VBGraph MCP] Auto-sync error: ${err.message}\n`);
       },
     });
 
     if (started) {
-      process.stderr.write('[CodeGraph MCP] File watcher active — graph will auto-sync on changes\n');
+      process.stderr.write('[VBGraph MCP] File watcher active — graph will auto-sync on changes\n');
     }
   }
 
@@ -197,7 +197,7 @@ export class MCPServer {
   stop(): void {
     // Close all cached cross-project connections first
     this.toolHandler.closeAll();
-    // Close the main CodeGraph instance
+    // Close the main VBGraph instance
     if (this.cg) {
       this.cg.close();
       this.cg = null;
@@ -349,7 +349,7 @@ export class MCPServer {
     }
 
     // If the default project isn't initialized yet, retry in case it was
-    // initialized after the MCP server started (e.g. user ran codegraph init)
+    // initialized after the MCP server started (e.g. user ran vbgraph init)
     await this.retryInitIfNeeded();
 
     const result = await this.toolHandler.execute(toolName, toolArgs);

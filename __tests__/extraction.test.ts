@@ -8,7 +8,7 @@ import { describe, it, expect, beforeAll, beforeEach, afterEach } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { CodeGraph } from '../src';
+import { VBGraph } from '../src';
 import { extractFromSource, scanDirectory, shouldIncludeFile } from '../src/extraction';
 import { detectLanguage, isLanguageSupported, getSupportedLanguages, initGrammars, loadAllGrammars } from '../src/extraction/grammars';
 import { normalizePath } from '../src/utils';
@@ -21,7 +21,7 @@ beforeAll(async () => {
 
 // Create a temporary directory for each test
 function createTempDir(): string {
-  return fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-test-'));
+  return fs.mkdtempSync(path.join(os.tmpdir(), 'vbgraph-test-'));
 }
 
 // Clean up temporary directory
@@ -2762,7 +2762,7 @@ end`;
     const code = `object frmMain: TfrmMain
   Left = 0
   Top = 0
-  Caption = 'CodeGraph DFM Fixture'
+  Caption = 'VBGraph DFM Fixture'
   ClientHeight = 480
   ClientWidth = 640
   OnCreate = FormCreate
@@ -2871,7 +2871,7 @@ export function multiply(a: number, b: number): number {
     );
 
     // Initialize and index
-    const cg = CodeGraph.initSync(tempDir);
+    const cg = VBGraph.initSync(tempDir);
     const result = await cg.indexAll();
 
     expect(result.success).toBe(true);
@@ -2905,7 +2905,7 @@ export function multiply(a: number, b: number): number {
     );
 
     // Initialize and index
-    const cg = CodeGraph.initSync(tempDir);
+    const cg = VBGraph.initSync(tempDir);
     const result = await cg.indexAll();
 
     expect(result.success).toBe(true);
@@ -2924,7 +2924,7 @@ export function multiply(a: number, b: number): number {
     fs.writeFileSync(path.join(srcDir, 'main.ts'), `export const x = 1;`);
 
     // Initialize and index
-    const cg = CodeGraph.initSync(tempDir);
+    const cg = VBGraph.initSync(tempDir);
     await cg.indexAll();
 
     // Check file is tracked
@@ -2952,7 +2952,7 @@ export function multiply(a: number, b: number): number {
     );
 
     // Initialize and index
-    const cg = CodeGraph.initSync(tempDir);
+    const cg = VBGraph.initSync(tempDir);
     await cg.indexAll();
 
     const initialNodes = cg.getNodesInFile('src/main.ts');
@@ -3063,14 +3063,14 @@ describe('Directory Exclusion', () => {
     expect(files[0]).not.toContain('\\');
   });
 
-  it('should respect .codegraphignore marker', () => {
+  it('should respect .vbgraphignore marker', () => {
     const srcDir = path.join(tempDir, 'src');
     const vendorDir = path.join(tempDir, 'vendor');
     fs.mkdirSync(srcDir, { recursive: true });
     fs.mkdirSync(vendorDir, { recursive: true });
     fs.writeFileSync(path.join(srcDir, 'index.ts'), 'export const x = 1;');
     fs.writeFileSync(path.join(vendorDir, 'lib.ts'), 'export const y = 2;');
-    fs.writeFileSync(path.join(vendorDir, '.codegraphignore'), '');
+    fs.writeFileSync(path.join(vendorDir, '.vbgraphignore'), '');
 
     const config = { ...DEFAULT_CONFIG, rootDir: tempDir };
     const files = scanDirectory(tempDir, config);

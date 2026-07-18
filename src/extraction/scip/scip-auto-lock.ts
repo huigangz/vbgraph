@@ -1,9 +1,9 @@
 /**
- * Advisory process lock for `codegraph index --scip-auto`.
+ * Advisory process lock for `vbgraph index --scip-auto`.
  *
  * Prevents two concurrent --scip-auto runs from spawning indexers and
- * ingesting into the same `.codegraph/` database. The lock is a single file
- * (`.codegraph/.scip-auto.lock`) containing the owning PID and a timestamp.
+ * ingesting into the same `.vbgraph/` database. The lock is a single file
+ * (`.vbgraph/.scip-auto.lock`) containing the owning PID and a timestamp.
  * A stale lock — one whose owning PID is no longer alive — is reclaimed
  * automatically so a crashed run does not wedge the project permanently.
  */
@@ -29,8 +29,8 @@ export type ReleaseScipAutoLock = () => void;
 
 const LOCK_FILE_NAME = '.scip-auto.lock';
 
-function lockFilePath(codegraphDir: string): string {
-  return path.join(codegraphDir, LOCK_FILE_NAME);
+function lockFilePath(vbgraphDir: string): string {
+  return path.join(vbgraphDir, LOCK_FILE_NAME);
 }
 
 /** True when `pid` refers to a live process this user can observe. */
@@ -58,27 +58,27 @@ function readLockPayload(file: string): LockPayload | null {
 }
 
 /**
- * Acquire the `--scip-auto` lock for `codegraphDir` (the project's
- * `.codegraph/` directory). Returns a release function that is also wired to
+ * Acquire the `--scip-auto` lock for `vbgraphDir` (the project's
+ * `.vbgraph/` directory). Returns a release function that is also wired to
  * run on SIGINT/SIGTERM so an interrupted run does not leave a live lock.
  *
  * @throws {ScipAutoLockError} when another live process holds the lock.
  */
-export function acquireScipAutoLock(codegraphDir: string): ReleaseScipAutoLock {
-  const file = lockFilePath(codegraphDir);
+export function acquireScipAutoLock(vbgraphDir: string): ReleaseScipAutoLock {
+  const file = lockFilePath(vbgraphDir);
 
   if (fs.existsSync(file)) {
     const payload = readLockPayload(file);
     if (payload && payload.pid !== process.pid && isPidAlive(payload.pid)) {
       throw new ScipAutoLockError(
-        `Another codegraph --scip-auto is running (PID ${payload.pid}). ` +
+        `Another vbgraph --scip-auto is running (PID ${payload.pid}). ` +
           `Wait or remove ${file} manually.`,
       );
     }
     // Lock is stale (no payload, or owning PID is dead) — safe to reclaim.
   }
 
-  fs.mkdirSync(codegraphDir, { recursive: true });
+  fs.mkdirSync(vbgraphDir, { recursive: true });
   const payload: LockPayload = {
     pid: process.pid,
     acquiredAt: new Date().toISOString(),

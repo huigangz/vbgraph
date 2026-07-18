@@ -35,7 +35,7 @@ beforeAll(async () => {
 
 // Create a temporary directory for each test
 function createTempDir(): string {
-  return fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-pr19-test-'));
+  return fs.mkdtempSync(path.join(os.tmpdir(), 'vbgraph-pr19-test-'));
 }
 
 // Clean up temporary directory
@@ -219,7 +219,7 @@ export const fetchData = async () => {
 
 // =============================================================================
 // Graph Traversal 'both' Direction Fix
-// (requires better-sqlite3 - will use CodeGraph integration)
+// (requires better-sqlite3 - will use VBGraph integration)
 // =============================================================================
 
 describe('Graph Traversal Both Direction', () => {
@@ -234,7 +234,7 @@ describe('Graph Traversal Both Direction', () => {
   });
 
   it.skipIf(!HAS_SQLITE)('should traverse both directions from a node', async () => {
-    const CodeGraph = (await import('../src/index')).default;
+    const VBGraph = (await import('../src/index')).default;
 
     const srcDir = path.join(testDir, 'src');
     fs.mkdirSync(srcDir, { recursive: true });
@@ -252,7 +252,7 @@ export function funcB(): void { funcC(); }
 export function funcC(): void { console.log('c'); }
 `);
 
-    const cg = CodeGraph.initSync(testDir, {
+    const cg = VBGraph.initSync(testDir, {
       config: { include: ['src/**/*.ts'], exclude: [] },
     });
 
@@ -299,7 +299,10 @@ describe('Best-Candidate Resolution', () => {
 describe('Schema v2 Migration', () => {
   it.skipIf(!HAS_SQLITE)('should have correct current schema version', async () => {
     const { CURRENT_SCHEMA_VERSION } = await import('../src/db/migrations');
-    expect(CURRENT_SCHEMA_VERSION).toBe(4);
+    // Stale-guard: bump this when adding a migration. Was asserting 4 while
+    // the schema had moved to 7 — masked for months because this test only
+    // runs when better-sqlite3 (native) is installed.
+    expect(CURRENT_SCHEMA_VERSION).toBe(7);
   });
 
   it.skipIf(!HAS_SQLITE)('should have migration for version 2', async () => {
@@ -327,7 +330,7 @@ describe('Database Layer Improvements', () => {
     const { DatabaseConnection } = await import('../src/db');
     const { QueryBuilder } = await import('../src/db/queries');
 
-    const dbPath = path.join(testDir, 'codegraph.db');
+    const dbPath = path.join(testDir, 'vbgraph.db');
     const db = DatabaseConnection.initialize(dbPath);
     const queries = new QueryBuilder(db.getDb());
 
@@ -383,7 +386,7 @@ describe('Database Layer Improvements', () => {
     const { DatabaseConnection } = await import('../src/db');
     const { QueryBuilder } = await import('../src/db/queries');
 
-    const dbPath = path.join(testDir, 'codegraph.db');
+    const dbPath = path.join(testDir, 'vbgraph.db');
     const db = DatabaseConnection.initialize(dbPath);
     const queries = new QueryBuilder(db.getDb());
 
@@ -414,7 +417,7 @@ describe('Database Layer Improvements', () => {
   it.skipIf(!HAS_SQLITE)('should set performance pragmas on initialization', async () => {
     const { DatabaseConnection } = await import('../src/db');
 
-    const dbPath = path.join(testDir, 'codegraph.db');
+    const dbPath = path.join(testDir, 'vbgraph.db');
     const db = DatabaseConnection.initialize(dbPath);
     const rawDb = db.getDb();
 
@@ -438,7 +441,7 @@ describe('Database Layer Improvements', () => {
     const { DatabaseConnection } = await import('../src/db');
     const { QueryBuilder } = await import('../src/db/queries');
 
-    const dbPath = path.join(testDir, 'codegraph.db');
+    const dbPath = path.join(testDir, 'vbgraph.db');
     const db = DatabaseConnection.initialize(dbPath);
     const queries = new QueryBuilder(db.getDb());
 
@@ -465,7 +468,7 @@ describe('Resolution Warm Caches', () => {
   });
 
   it.skipIf(!HAS_SQLITE)('should warm caches and use them for lookups', async () => {
-    const CodeGraph = (await import('../src/index')).default;
+    const VBGraph = (await import('../src/index')).default;
 
     const srcDir = path.join(testDir, 'src');
     fs.mkdirSync(srcDir, { recursive: true });
@@ -475,7 +478,7 @@ export function myFunc(): void {}
 export function otherFunc(): void { myFunc(); }
 `);
 
-    const cg = CodeGraph.initSync(testDir, {
+    const cg = VBGraph.initSync(testDir, {
       config: { include: ['src/**/*.ts'], exclude: [] },
     });
 
@@ -550,7 +553,7 @@ describe('MCP Tool Improvements', () => {
   describe('findSymbol disambiguation', () => {
     it.skipIf(!HAS_SQLITE)('should prefer exact name matches', async () => {
       const { ToolHandler } = await import('../src/mcp/tools');
-      const CodeGraph = (await import('../src/index')).default;
+      const VBGraph = (await import('../src/index')).default;
 
       const tmpDir = createTempDir();
       const srcDir = path.join(tmpDir, 'src');
@@ -561,7 +564,7 @@ export function getValue(): number { return 1; }
 export function getValueFromCache(): number { return 2; }
 `);
 
-      const cg = CodeGraph.initSync(tmpDir, {
+      const cg = VBGraph.initSync(tmpDir, {
         config: { include: ['src/**/*.ts'], exclude: [] },
       });
       await cg.indexAll();
@@ -582,7 +585,7 @@ export function getValueFromCache(): number { return 2; }
 
     it.skipIf(!HAS_SQLITE)('should note when multiple symbols share the same name', async () => {
       const { ToolHandler } = await import('../src/mcp/tools');
-      const CodeGraph = (await import('../src/index')).default;
+      const VBGraph = (await import('../src/index')).default;
 
       const tmpDir = createTempDir();
       const srcDir = path.join(tmpDir, 'src');
@@ -596,7 +599,7 @@ export function handle(): void {}
 export function handle(): void {}
 `);
 
-      const cg = CodeGraph.initSync(tmpDir, {
+      const cg = VBGraph.initSync(tmpDir, {
         config: { include: ['src/**/*.ts'], exclude: [] },
       });
       await cg.indexAll();
@@ -617,14 +620,14 @@ export function handle(): void {}
 
     it.skipIf(!HAS_SQLITE)('should return null when symbol is not found', async () => {
       const { ToolHandler } = await import('../src/mcp/tools');
-      const CodeGraph = (await import('../src/index')).default;
+      const VBGraph = (await import('../src/index')).default;
 
       const tmpDir = createTempDir();
       const srcDir = path.join(tmpDir, 'src');
       fs.mkdirSync(srcDir, { recursive: true });
       fs.writeFileSync(path.join(srcDir, 'a.ts'), `export function foo(): void {}`);
 
-      const cg = CodeGraph.initSync(tmpDir, {
+      const cg = VBGraph.initSync(tmpDir, {
         config: { include: ['src/**/*.ts'], exclude: [] },
       });
       await cg.indexAll();
@@ -657,18 +660,18 @@ describe('CLI uninit', () => {
     cleanupTempDir(testDir);
   });
 
-  it.skipIf(!HAS_SQLITE)('should uninitialize a project via CodeGraph.uninitialize()', async () => {
-    const CodeGraph = (await import('../src/index')).default;
+  it.skipIf(!HAS_SQLITE)('should uninitialize a project via VBGraph.uninitialize()', async () => {
+    const VBGraph = (await import('../src/index')).default;
 
     // Initialize
-    const cg = CodeGraph.initSync(testDir);
-    expect(CodeGraph.isInitialized(testDir)).toBe(true);
+    const cg = VBGraph.initSync(testDir);
+    expect(VBGraph.isInitialized(testDir)).toBe(true);
 
     // Uninitialize
     cg.uninitialize();
 
-    // .codegraph directory should be removed
-    expect(CodeGraph.isInitialized(testDir)).toBe(false);
+    // .vbgraph directory should be removed
+    expect(VBGraph.isInitialized(testDir)).toBe(false);
   });
 });
 

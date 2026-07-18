@@ -1,14 +1,14 @@
 /**
- * SCIP failure ledger — `.codegraph/scip-failures.json`.
+ * SCIP failure ledger — `.vbgraph/scip-failures.json`.
  *
- * Records the last run's SCIP failure modes per indexer so `codegraph status`
+ * Records the last run's SCIP failure modes per indexer so `vbgraph status`
  * can surface them. The hard invariant (P0.4c): no SCIP failure mode makes
- * CodeGraph unusable — every failure degrades to tree-sitter for the affected
+ * VBGraph unusable — every failure degrades to tree-sitter for the affected
  * files and is recorded here; the overall `--scip-auto` run still exits 0.
  *
  * File semantics:
  *  - Overwritten (not appended) each run; long-term history lives in
- *    `.codegraph/logs/*.log`.
+ *    `.vbgraph/logs/*.log`.
  *  - Written atomically (`.tmp` + rename) so a partial write cannot corrupt it.
  *  - Carries a top-level `version`; a reader rejects unknown versions.
  */
@@ -50,17 +50,17 @@ export interface ScipFailureLedger {
 const LEDGER_VERSION = 1;
 const LEDGER_FILENAME = 'scip-failures.json';
 
-function ledgerPath(codegraphDir: string): string {
-  return path.join(codegraphDir, LEDGER_FILENAME);
+function ledgerPath(vbgraphDir: string): string {
+  return path.join(vbgraphDir, LEDGER_FILENAME);
 }
 
 /**
  * Write the failure ledger for the current run. Overwrites any previous ledger.
  * Atomic: writes a sibling `.tmp` then renames over the target (atomic on POSIX
- * and NTFS). `codegraphDir` is assumed to exist.
+ * and NTFS). `vbgraphDir` is assumed to exist.
  */
 export function writeScipFailureLedger(
-  codegraphDir: string,
+  vbgraphDir: string,
   failures: ScipFailure[],
 ): void {
   const ledger: ScipFailureLedger = {
@@ -68,7 +68,7 @@ export function writeScipFailureLedger(
     runAt: new Date().toISOString(),
     failures,
   };
-  const finalPath = ledgerPath(codegraphDir);
+  const finalPath = ledgerPath(vbgraphDir);
   const tmpPath = `${finalPath}.tmp`;
   fs.writeFileSync(tmpPath, `${JSON.stringify(ledger, null, 2)}\n`, 'utf8');
   fs.renameSync(tmpPath, finalPath);
@@ -79,8 +79,8 @@ export function writeScipFailureLedger(
  *
  * @throws when the ledger's schema version is newer than this build understands.
  */
-export function readScipFailureLedger(codegraphDir: string): ScipFailureLedger | null {
-  const finalPath = ledgerPath(codegraphDir);
+export function readScipFailureLedger(vbgraphDir: string): ScipFailureLedger | null {
+  const finalPath = ledgerPath(vbgraphDir);
   let raw: string;
   try {
     raw = fs.readFileSync(finalPath, 'utf8');
@@ -91,7 +91,7 @@ export function readScipFailureLedger(codegraphDir: string): ScipFailureLedger |
   if (parsed.version !== LEDGER_VERSION) {
     throw new Error(
       `scip-failures.json schema version ${String(parsed.version)} unknown — ` +
-        `codegraph upgrade required`,
+        `vbgraph upgrade required`,
     );
   }
   return {

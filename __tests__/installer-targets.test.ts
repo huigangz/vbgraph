@@ -147,10 +147,10 @@ describe('Installer targets — contract', () => {
             const after = JSON.parse(fs.readFileSync(jsonPath, 'utf-8'));
             if (target.id === 'opencode') {
               expect(after.mcp.other).toBeDefined();
-              expect(after.mcp.codegraph).toBeDefined();
+              expect(after.mcp.vbgraph).toBeDefined();
             } else {
               expect(after.mcpServers.other).toBeDefined();
-              expect(after.mcpServers.codegraph).toBeDefined();
+              expect(after.mcpServers.vbgraph).toBeDefined();
             }
           });
 
@@ -228,7 +228,7 @@ describe('Installer targets — partial-state idempotency', () => {
     expect(written.action).not.toBe('not-found');
     // The .json file is left alone.
     const jsonText = fs.readFileSync(path.join(dir, 'opencode.json'), 'utf-8');
-    expect(jsonText).not.toContain('codegraph');
+    expect(jsonText).not.toContain('vbgraph');
   });
 
   it('opencode: uses .json when only .json exists (no .jsonc)', () => {
@@ -273,7 +273,7 @@ describe('Installer targets — partial-state idempotency', () => {
     expect(afterInstall).toContain('// top-level note about my opencode setup');
     expect(afterInstall).toContain('/* multi-line block comment');
     expect(afterInstall).toContain('// pinned');
-    expect(afterInstall).toContain('"codegraph"');
+    expect(afterInstall).toContain('"vbgraph"');
     expect(afterInstall).toContain('"providers"');
 
     // Idempotent re-run reports unchanged, file is byte-identical.
@@ -282,15 +282,15 @@ describe('Installer targets — partial-state idempotency', () => {
     expect(fs.readFileSync(file, 'utf-8')).toBe(afterInstall);
   });
 
-  it('opencode: install writes AGENTS.md with the marker-delimited codegraph block', () => {
+  it('opencode: install writes AGENTS.md with the marker-delimited vbgraph block', () => {
     const opencode = getTarget('opencode')!;
     opencode.install('global', { autoAllow: true });
     const agentsMd = path.join(opencodeGlobalDir(tmpHome), 'AGENTS.md');
     expect(fs.existsSync(agentsMd)).toBe(true);
     const body = fs.readFileSync(agentsMd, 'utf-8');
-    expect(body).toContain('<!-- CODEGRAPH_START -->');
-    expect(body).toContain('<!-- CODEGRAPH_END -->');
-    expect(body).toContain('codegraph_callers');
+    expect(body).toContain('<!-- VBGRAPH_START -->');
+    expect(body).toContain('<!-- VBGRAPH_END -->');
+    expect(body).toContain('vbgraph_callers');
   });
 
   it('opencode: AGENTS.md install preserves pre-existing user content outside markers', () => {
@@ -304,10 +304,10 @@ describe('Installer targets — partial-state idempotency', () => {
     const body = fs.readFileSync(agentsMd, 'utf-8');
     expect(body).toContain('# My personal opencode instructions');
     expect(body).toContain('Always respond in pirate.');
-    expect(body).toContain('<!-- CODEGRAPH_START -->');
+    expect(body).toContain('<!-- VBGRAPH_START -->');
   });
 
-  it('opencode: uninstall strips only the codegraph block from AGENTS.md', () => {
+  it('opencode: uninstall strips only the vbgraph block from AGENTS.md', () => {
     const opencode = getTarget('opencode')!;
     const dir = opencodeGlobalDir(tmpHome);
     fs.mkdirSync(dir, { recursive: true });
@@ -320,8 +320,8 @@ describe('Installer targets — partial-state idempotency', () => {
     const body = fs.readFileSync(agentsMd, 'utf-8');
     expect(body).toContain('# My personal opencode instructions');
     expect(body).toContain('Always respond in pirate.');
-    expect(body).not.toContain('CODEGRAPH_START');
-    expect(body).not.toContain('codegraph_callers');
+    expect(body).not.toContain('VBGRAPH_START');
+    expect(body).not.toContain('vbgraph_callers');
   });
 
   it('opencode: local install writes ./opencode.jsonc and ./AGENTS.md in cwd', () => {
@@ -334,7 +334,7 @@ describe('Installer targets — partial-state idempotency', () => {
     expect(paths.some((p) => p.endsWith('/AGENTS.md'))).toBe(true);
   });
 
-  it('opencode: uninstall removes only mcp.codegraph, preserves comments and siblings', () => {
+  it('opencode: uninstall removes only mcp.vbgraph, preserves comments and siblings', () => {
     const opencode = getTarget('opencode')!;
     const dir = opencodeGlobalDir(tmpHome);
     fs.mkdirSync(dir, { recursive: true });
@@ -352,17 +352,17 @@ describe('Installer targets — partial-state idempotency', () => {
 
     opencode.install('global', { autoAllow: true });
     const afterInstall = fs.readFileSync(file, 'utf-8');
-    expect(afterInstall).toContain('"codegraph"');
+    expect(afterInstall).toContain('"vbgraph"');
     expect(afterInstall).toContain('"other"');
 
     opencode.uninstall('global');
     const afterUninstall = fs.readFileSync(file, 'utf-8');
-    expect(afterUninstall).not.toContain('codegraph');
+    expect(afterUninstall).not.toContain('vbgraph');
     expect(afterUninstall).toContain('// important comment');
     expect(afterUninstall).toContain('"other"');
   });
 
-  it('codex: user-added key inside [mcp_servers.codegraph] survives idempotent re-install', () => {
+  it('codex: user-added key inside [mcp_servers.vbgraph] survives idempotent re-install', () => {
     const codex = getTarget('codex')!;
     codex.install('global', { autoAllow: false });
     const tomlPath = path.join(tmpHome, '.codex', 'config.toml');
@@ -376,7 +376,7 @@ describe('Installer targets — partial-state idempotency', () => {
     // Re-install: our serializer doesn't know `enabled = true`, so
     // the block no longer matches the canonical form — we'll
     // overwrite it. This is the documented contract: we own the
-    // codegraph block exclusively.
+    // vbgraph block exclusively.
     const second = codex.install('global', { autoAllow: false });
     const tomlEntry = second.files.find((f) => f.path.endsWith('config.toml'))!;
     expect(tomlEntry.action).toBe('updated');
@@ -407,27 +407,27 @@ describe('Installer targets — registry', () => {
 });
 
 describe('Installer targets — TOML serializer (Codex backbone)', () => {
-  it('builds a [mcp_servers.codegraph] block with command + args', () => {
-    const block = buildTomlTable('mcp_servers.codegraph', {
-      command: 'codegraph',
+  it('builds a [mcp_servers.vbgraph] block with command + args', () => {
+    const block = buildTomlTable('mcp_servers.vbgraph', {
+      command: 'vbgraph',
       args: ['serve', '--mcp'],
     });
-    expect(block).toContain('[mcp_servers.codegraph]');
-    expect(block).toContain('command = "codegraph"');
+    expect(block).toContain('[mcp_servers.vbgraph]');
+    expect(block).toContain('command = "vbgraph"');
     expect(block).toContain('args = ["serve", "--mcp"]');
   });
 
   it('upsert inserts into empty content', () => {
-    const block = buildTomlTable('mcp_servers.codegraph', { command: 'codegraph', args: ['serve'] });
-    const { content, action } = upsertTomlTable('', 'mcp_servers.codegraph', block);
+    const block = buildTomlTable('mcp_servers.vbgraph', { command: 'vbgraph', args: ['serve'] });
+    const { content, action } = upsertTomlTable('', 'mcp_servers.vbgraph', block);
     expect(action).toBe('inserted');
-    expect(content.startsWith('[mcp_servers.codegraph]')).toBe(true);
+    expect(content.startsWith('[mcp_servers.vbgraph]')).toBe(true);
   });
 
   it('upsert is idempotent — second call returns unchanged', () => {
-    const block = buildTomlTable('mcp_servers.codegraph', { command: 'codegraph', args: ['serve'] });
-    const first = upsertTomlTable('', 'mcp_servers.codegraph', block);
-    const second = upsertTomlTable(first.content, 'mcp_servers.codegraph', block);
+    const block = buildTomlTable('mcp_servers.vbgraph', { command: 'vbgraph', args: ['serve'] });
+    const first = upsertTomlTable('', 'mcp_servers.vbgraph', block);
+    const second = upsertTomlTable(first.content, 'mcp_servers.vbgraph', block);
     expect(second.action).toBe('unchanged');
     expect(second.content).toBe(first.content);
   });
@@ -437,26 +437,26 @@ describe('Installer targets — TOML serializer (Codex backbone)', () => {
       '[other_table]',
       'foo = "bar"',
       '',
-      '[mcp_servers.codegraph]',
-      'command = "old-codegraph"',
+      '[mcp_servers.vbgraph]',
+      'command = "old-vbgraph"',
       'args = ["old"]',
       '',
       '[zzz]',
       'baz = "qux"',
       '',
     ].join('\n');
-    const newBlock = buildTomlTable('mcp_servers.codegraph', {
-      command: 'codegraph',
+    const newBlock = buildTomlTable('mcp_servers.vbgraph', {
+      command: 'vbgraph',
       args: ['serve', '--mcp'],
     });
-    const { content, action } = upsertTomlTable(existing, 'mcp_servers.codegraph', newBlock);
+    const { content, action } = upsertTomlTable(existing, 'mcp_servers.vbgraph', newBlock);
     expect(action).toBe('replaced');
     expect(content).toContain('[other_table]');
     expect(content).toContain('foo = "bar"');
     expect(content).toContain('[zzz]');
     expect(content).toContain('baz = "qux"');
-    expect(content).toContain('command = "codegraph"');
-    expect(content).not.toContain('old-codegraph');
+    expect(content).toContain('command = "vbgraph"');
+    expect(content).not.toContain('old-vbgraph');
   });
 
   it('removeTomlTable strips the block and preserves siblings', () => {
@@ -464,20 +464,20 @@ describe('Installer targets — TOML serializer (Codex backbone)', () => {
       '[other_table]',
       'foo = "bar"',
       '',
-      '[mcp_servers.codegraph]',
-      'command = "codegraph"',
+      '[mcp_servers.vbgraph]',
+      'command = "vbgraph"',
       'args = ["serve"]',
     ].join('\n');
-    const { content, action } = removeTomlTable(existing, 'mcp_servers.codegraph');
+    const { content, action } = removeTomlTable(existing, 'mcp_servers.vbgraph');
     expect(action).toBe('removed');
     expect(content).toContain('[other_table]');
     expect(content).toContain('foo = "bar"');
-    expect(content).not.toContain('mcp_servers.codegraph');
+    expect(content).not.toContain('mcp_servers.vbgraph');
   });
 
   it('removeTomlTable on missing table returns not-found, no content change', () => {
     const existing = '[other]\nfoo = "bar"\n';
-    const { content, action } = removeTomlTable(existing, 'mcp_servers.codegraph');
+    const { content, action } = removeTomlTable(existing, 'mcp_servers.vbgraph');
     expect(action).toBe('not-found');
     expect(content).toBe(existing);
   });
@@ -491,10 +491,10 @@ describe('Installer targets — TOML serializer (Codex backbone)', () => {
       'name = "b"',
       '',
     ].join('\n');
-    const block = buildTomlTable('mcp_servers.codegraph', { command: 'codegraph', args: ['serve'] });
-    const { content } = upsertTomlTable(existing, 'mcp_servers.codegraph', block);
+    const block = buildTomlTable('mcp_servers.vbgraph', { command: 'vbgraph', args: ['serve'] });
+    const { content } = upsertTomlTable(existing, 'mcp_servers.vbgraph', block);
     expect(content.match(/\[\[foo\]\]/g)?.length).toBe(2);
-    expect(content).toContain('[mcp_servers.codegraph]');
+    expect(content).toContain('[mcp_servers.vbgraph]');
   });
 });
 

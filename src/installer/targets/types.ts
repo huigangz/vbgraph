@@ -30,7 +30,7 @@ export type TargetId = 'claude' | 'cursor' | 'codex' | 'opencode';
  * acceptable (we still write); false negatives just mean the user
  * has to opt in manually.
  *
- * `alreadyConfigured` reports whether codegraph has already been
+ * `alreadyConfigured` reports whether vbgraph has already been
  * wired into this target at this location — drives the
  * "Updated"-vs-"Added" log line and lets `--check` exit 0/1.
  */
@@ -97,7 +97,7 @@ export interface AgentTarget {
   uninstall(loc: Location): WriteResult;
   /**
    * Print the MCP-server snippet a user would paste manually for this
-   * target. Used by `codegraph install --print-config <id>` and by
+   * target. Used by `vbgraph install --print-config <id>` and by
    * the README. Must NOT touch the filesystem.
    */
   printConfig(loc: Location): string;
@@ -106,13 +106,13 @@ export interface AgentTarget {
   /**
    * Optional. Write any project-local surfaces this target needs in
    * order to work fully when its MCP config is configured globally.
-   * Called by `codegraph init` to bootstrap new projects without
-   * forcing the user to re-run `codegraph install` per project.
+   * Called by `vbgraph init` to bootstrap new projects without
+   * forcing the user to re-run `vbgraph install` per project.
    *
    * Most targets need nothing here — their global config is complete.
    * Cursor is the notable exception: its rules system
    * (`.cursor/rules/*.mdc`) is project-scoped only, and is what makes
-   * Cursor's agent prefer codegraph over its built-in grep.
+   * Cursor's agent prefer vbgraph over its built-in grep.
    *
    * Must be idempotent. Targets that have nothing project-local omit
    * the method entirely.

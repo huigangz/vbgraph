@@ -12,14 +12,14 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 /**
- * The MCP-server config block codegraph injects. Same shape across
+ * The MCP-server config block vbgraph injects. Same shape across
  * all JSON-shaped agent configs (Claude, Cursor, opencode), only the
  * surrounding wrapper differs. Codex (TOML) builds its own block.
  */
 export function getMcpServerConfig(): { type: string; command: string; args: string[] } {
   return {
     type: 'stdio',
-    command: 'codegraph',
+    command: 'vbgraph',
     args: ['serve', '--mcp'],
   };
 }
@@ -29,15 +29,15 @@ export function getMcpServerConfig(): { type: string; command: string; args: str
  * have a permissions concept can compose this list directly. The
  * permission strings follow Claude's `mcp__<server>__<tool>` format.
  */
-export function getCodeGraphPermissions(): string[] {
+export function getVBGraphPermissions(): string[] {
   return [
-    'mcp__codegraph__codegraph_search',
-    'mcp__codegraph__codegraph_context',
-    'mcp__codegraph__codegraph_callers',
-    'mcp__codegraph__codegraph_callees',
-    'mcp__codegraph__codegraph_impact',
-    'mcp__codegraph__codegraph_node',
-    'mcp__codegraph__codegraph_status',
+    'mcp__vbgraph__vbgraph_search',
+    'mcp__vbgraph__vbgraph_context',
+    'mcp__vbgraph__vbgraph_callers',
+    'mcp__vbgraph__vbgraph_callees',
+    'mcp__vbgraph__vbgraph_impact',
+    'mcp__vbgraph__vbgraph_node',
+    'mcp__vbgraph__vbgraph_status',
   ];
 }
 
@@ -123,8 +123,8 @@ export function jsonDeepEqual(a: unknown, b: unknown): boolean {
 /**
  * Replace or append a marker-delimited section in a markdown-ish file.
  *
- * Used by Claude / Codex for the `<!-- CODEGRAPH_START --> ... <!--
- * CODEGRAPH_END -->` block. Preserves all content outside the
+ * Used by Claude / Codex for the `<!-- VBGRAPH_START --> ... <!--
+ * VBGRAPH_END -->` block. Preserves all content outside the
  * markers verbatim.
  *
  * Returns `created` when the file didn't exist; `updated` when

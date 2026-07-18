@@ -1,5 +1,5 @@
 /**
- * CodeGraph Type Definitions
+ * VBGraph Type Definitions
  *
  * Core types for the semantic knowledge graph system.
  */
@@ -717,9 +717,9 @@ export interface FrameworkHint {
 }
 
 /**
- * Configuration for a CodeGraph project
+ * Configuration for a VBGraph project
  */
-export interface CodeGraphConfig {
+export interface VBGraphConfig {
   /** Schema version for migrations */
   version: number;
 
@@ -771,7 +771,7 @@ export interface CodeGraphConfig {
    */
   emptyFallbackThresholdBytes?: number;
 
-  /** When true, `codegraph index` auto-detects and spawns SCIP indexers. */
+  /** When true, `vbgraph index` auto-detects and spawns SCIP indexers. */
   scipAuto?: boolean;
 
   /** SCIP indexer names to skip in `--scip-auto` mode. */
@@ -782,7 +782,7 @@ export interface CodeGraphConfig {
    * if more than this many SCIP-covered files have changed in a single sync,
    * the per-file shadow extraction is skipped and all affected SCIP rows are
    * bulk-marked `staleness_visible = 1` (visible-stale) instead. The user
-   * sees a CLI warning suggesting `codegraph scip-refresh`.
+   * sees a CLI warning suggesting `vbgraph scip-refresh`.
    *
    * Default: 50. Lower values trigger the bulk path more aggressively
    * (faster sync but more "needs refresh" surface area); higher values
@@ -793,13 +793,13 @@ export interface CodeGraphConfig {
   maxStaleFilesPerSync?: number;
 
   /**
-   * Shell command run by `codegraph scip-refresh` (P2.3) to regenerate the
+   * Shell command run by `vbgraph scip-refresh` (P2.3) to regenerate the
    * `.scip` index. Default: `'scip-dotnet index ./'`. Tokenized via
    * whitespace; for paths with spaces, set as a JSON array in
-   * `.codegraph/config.json` (e.g. `["scip-dotnet", "index", "C:/Path With Spaces/"]`).
+   * `.vbgraph/config.json` (e.g. `["scip-dotnet", "index", "C:/Path With Spaces/"]`).
    *
    * The command is spawned with the project root as cwd; stdout/stderr are
-   * captured to `.codegraph/logs/scip-refresh-<timestamp>.log`.
+   * captured to `.vbgraph/logs/scip-refresh-<timestamp>.log`.
    */
   scipRefreshCommand?: string | string[];
 
@@ -815,7 +815,7 @@ export interface CodeGraphConfig {
 /**
  * Default configuration values
  */
-export const DEFAULT_CONFIG: CodeGraphConfig = {
+export const DEFAULT_CONFIG: VBGraphConfig = {
   version: 1,
   rootDir: '.',
   include: [
@@ -1071,9 +1071,9 @@ export interface GraphStats {
 }
 
 /**
- * Options for `CodeGraph.refreshScip()` (P2.3).
+ * Options for `VBGraph.refreshScip()` (P2.3).
  *
- * Both fields are optional and fall back to `CodeGraphConfig.scipRefreshCommand`
+ * Both fields are optional and fall back to `VBGraphConfig.scipRefreshCommand`
  * / `scipRefreshOutputPath` respectively. The CLI passes them when the user
  * supplies `--cmd` / `--scip-output` overrides.
  */
@@ -1088,8 +1088,8 @@ export interface ScipRefreshOptions {
 }
 
 /**
- * Per-language summary returned by `CodeGraph.getLanguageTiers` — drives
- * the per-language tier display in `codegraph status` (P2.4.4).
+ * Per-language summary returned by `VBGraph.getLanguageTiers` — drives
+ * the per-language tier display in `vbgraph status` (P2.4.4).
  *
  * Tier semantics:
  *  - `'tier-1'`: at least one node with `provenance = 'scip'` exists in the
@@ -1120,8 +1120,8 @@ export interface LanguageTier {
 }
 
 /**
- * Sidecar file written by `CodeGraph.refreshScip` and read by
- * `CodeGraph.getLastScipRefresh` / `codegraph status`.
+ * Sidecar file written by `VBGraph.refreshScip` and read by
+ * `VBGraph.getLastScipRefresh` / `vbgraph status`.
  *
  * Schema is informal — fields can be added (never removed) without
  * versioning. The file is best-effort; a write failure during refresh does
@@ -1150,12 +1150,12 @@ export interface ScipLastRefresh {
 }
 
 /**
- * Result of `CodeGraph.refreshScip()`.
+ * Result of `VBGraph.refreshScip()`.
  *
  * `phase` maps to CLI exit codes:
  *  - `'ok'`             → 0 (indexer + ingest + assertion all succeeded)
  *  - `'spawn-failed'`   → 1 (indexer non-zero exit, crash, or missing output file)
- *  - `'lock-failed'`    → 1 (another codegraph process holds the cross-process
+ *  - `'lock-failed'`    → 1 (another vbgraph process holds the cross-process
  *                            FileLock — refresh did not run; retry later)
  *  - `'ingest-failed'`  → 2 (corrupt `.scip`, persister throw, or post-ingest
  *                            shadow-leak assertion failure)
@@ -1172,7 +1172,7 @@ export interface ScipRefreshResult {
 
 /**
  * Decomposed staleness counts returned by `getStaleSummary` — used by
- * `codegraph status` to report SCIP drift transparently.
+ * `vbgraph status` to report SCIP drift transparently.
  *
  * Categories mirror the underlying raw-column states:
  *  - hiddenStale: `stale = 1 AND staleness_visible = 0` — SCIP file edited,

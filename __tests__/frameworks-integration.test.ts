@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterEach } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { CodeGraph } from '../src';
+import { VBGraph } from '../src';
 import { initGrammars, loadAllGrammars } from '../src/extraction/grammars';
 
 beforeAll(async () => {
@@ -34,7 +34,7 @@ describe('Django end-to-end framework extraction', () => {
         'urlpatterns = [path("users/", UserListView.as_view(), name="user-list")]\n'
     );
 
-    const cg = CodeGraph.initSync(tmpDir);
+    const cg = VBGraph.initSync(tmpDir);
     await cg.indexAll();
 
     // Route node exists

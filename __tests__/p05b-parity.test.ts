@@ -14,7 +14,7 @@ import * as path from 'path';
 import { fileURLToPath } from 'url';
 
 import type { Edge, Node } from '../src/types';
-import { CodeGraph } from '../src';
+import { VBGraph } from '../src';
 import { DatabaseConnection } from '../src/db';
 import { QueryBuilder } from '../src/db/queries';
 import { buildScopeIndex } from '../src/resolution/scope-index';
@@ -120,7 +120,7 @@ describe('scope index', () => {
   }
 
   beforeEach(() => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-p05b-'));
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vbgraph-p05b-'));
     conn = DatabaseConnection.initialize(path.join(tmpDir, 'g.db'));
     qb = new QueryBuilder(conn.getDb());
     // A class Widget with a method Render, plus a top-level function helper.
@@ -226,17 +226,17 @@ describe('parity — real scip-dotnet VB.NET fixture vs tree-sitter Tier 0', () 
 // --- scope-resolution pass (P0.5b integration) ----------------------------
 
 /**
- * P0.5b — the scope-resolved pass wired into `codegraph index`. A bare name
+ * P0.5b — the scope-resolved pass wired into `vbgraph index`. A bare name
  * declared in the use site's own class/module (or, for top-level declarations,
  * its file) resolves against the extracted `nodes` + `contains` graph; the
  * resulting edge carries `provenance='scope-resolved'`.
  */
 describe('scope-resolved resolution pass', () => {
   let tmpDir: string;
-  let cg: CodeGraph | undefined;
+  let cg: VBGraph | undefined;
 
   beforeEach(() => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-p05b-scope-'));
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vbgraph-p05b-scope-'));
   });
 
   afterEach(() => {
@@ -245,7 +245,7 @@ describe('scope-resolved resolution pass', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  const callable = (graph: CodeGraph, name: string): Node | undefined =>
+  const callable = (graph: VBGraph, name: string): Node | undefined =>
     [...graph.getNodesByKind('method'), ...graph.getNodesByKind('function')].find(
       (n) => n.name === name,
     );
@@ -263,7 +263,7 @@ describe('scope-resolved resolution pass', () => {
         'End Module',
       ].join('\n'),
     );
-    cg = await CodeGraph.init(tmpDir, { index: true });
+    cg = await VBGraph.init(tmpDir, { index: true });
 
     const foo = callable(cg, 'Foo');
     const bar = callable(cg, 'Bar');
@@ -282,7 +282,7 @@ describe('scope-resolved resolution pass', () => {
         '\n',
       ),
     );
-    cg = await CodeGraph.init(tmpDir, { index: true });
+    cg = await VBGraph.init(tmpDir, { index: true });
 
     const main = callable(cg, 'main');
     const helper = callable(cg, 'helper');
@@ -311,7 +311,7 @@ describe('scope-resolved resolution pass', () => {
         'End Module',
       ].join('\n'),
     );
-    cg = await CodeGraph.init(tmpDir, { index: true });
+    cg = await VBGraph.init(tmpDir, { index: true });
 
     const foo = callable(cg, 'Foo');
     expect(foo).toBeTruthy();

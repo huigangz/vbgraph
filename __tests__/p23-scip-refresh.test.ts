@@ -11,7 +11,7 @@
  *  4. `getScipDocumentsForIndex` returns the file list for an index.
  *  5. The post-ingest assertion catches a synthetic shadow leak.
  *
- * Driving the full `CodeGraph.refreshScip` flow would require spawning a
+ * Driving the full `VBGraph.refreshScip` flow would require spawning a
  * real indexer subprocess — out of scope. P2.6 (cron / e2e) can add that.
  */
 
@@ -33,7 +33,7 @@ let db: SqliteDatabase;
 let qb: QueryBuilder;
 
 beforeEach(() => {
-  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-p23-'));
+  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vbgraph-p23-'));
   conn = DatabaseConnection.initialize(path.join(tmpDir, 'graph.db'));
   db = conn.getDb();
   qb = new QueryBuilder(db);

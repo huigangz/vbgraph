@@ -2,7 +2,7 @@
  * SCIP symbol-string parser.
  *
  * A SCIP symbol is a URI-like string that uniquely identifies a class, method,
- * field, etc. CodeGraph uses it for two things:
+ * field, etc. VBGraph uses it for two things:
  *   1. A stable node id — `hashScipSymbol` hashes the string so the same symbol
  *      always maps to the same `node.id`, whether seen as a definition or a
  *      cross-file reference. The original string is kept in `nodes.scip_symbol`.
@@ -304,7 +304,7 @@ export function descriptorSuffixToNodeKind(suffix: ScipDescriptorSuffix): NodeKi
 }
 
 /**
- * SCIP `SymbolInformation.Kind` (the numeric enum) -> CodeGraph `NodeKind`.
+ * SCIP `SymbolInformation.Kind` (the numeric enum) -> VBGraph `NodeKind`.
  * Only well-known kinds are mapped; unmapped/`Unspecified` fall back to the
  * descriptor suffix. `Module` -> `module` is load-bearing for VB.NET.
  */

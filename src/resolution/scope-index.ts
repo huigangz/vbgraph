@@ -4,7 +4,7 @@
  * The default Phase-2 resolution (`import-resolver` + `name-matcher`) is a
  * heuristic that yields ambiguous targets. The scope index narrows a use-site
  * name against the lexical containers it is actually visible in — file scope,
- * then enclosing-class scope — using the graph CodeGraph already extracted
+ * then enclosing-class scope — using the graph VBGraph already extracted
  * (`nodes` + `contains` edges). Because it works off that graph rather than
  * re-walking each language's AST, it is language-agnostic; it covers the
  * SCIP-priority languages (C#, VB.NET, Java, Python, TypeScript) uniformly.

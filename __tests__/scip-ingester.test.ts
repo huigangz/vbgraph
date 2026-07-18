@@ -45,7 +45,7 @@ let db: SqliteDatabase;
 let qb: QueryBuilder;
 
 beforeEach(() => {
-  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-scip-ing-'));
+  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vbgraph-scip-ing-'));
   conn = DatabaseConnection.initialize(path.join(tmpDir, 'graph.db'));
   db = conn.getDb();
   qb = new QueryBuilder(db);

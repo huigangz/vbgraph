@@ -20,7 +20,7 @@ let conn: DatabaseConnection;
 let qb: QueryBuilder;
 
 beforeEach(() => {
-  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-p08-'));
+  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vbgraph-p08-'));
   conn = DatabaseConnection.initialize(path.join(tmpDir, 'p08.db'));
   qb = new QueryBuilder(conn.getDb());
 });

@@ -10,7 +10,7 @@
  *
  * `runParity` is the full-pipeline runner: it ingests a committed `.scip`,
  * tree-sitter-extracts the same files, and returns the comparison. It lives in
- * `src/` (not `__tests__/`) because the `codegraph parity` CLI subcommand
+ * `src/` (not `__tests__/`) because the `vbgraph parity` CLI subcommand
  * drives it — the harness core moved here with it.
  */
 
@@ -278,7 +278,7 @@ export async function runParity(fixturePath: string): Promise<ParityRunResult> {
     './extraction/grammars'
   );
 
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-parity-'));
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vbgraph-parity-'));
   const conn = DatabaseConnection.initialize(path.join(tmpDir, 'parity.db'));
   try {
     const db = conn.getDb();

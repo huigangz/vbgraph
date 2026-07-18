@@ -712,7 +712,7 @@ function emitEdge(ctx: EdgeContext, edge: Edge): void {
   try {
     validateEdgeLineColumn(edge);
   } catch (err) {
-    console.warn(`[codegraph] skipping malformed SCIP edge: ${(err as Error).message}`);
+    console.warn(`[vbgraph] skipping malformed SCIP edge: ${(err as Error).message}`);
     return;
   }
   ctx.qb.upsertGraphEdge(edge);

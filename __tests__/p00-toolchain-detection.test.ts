@@ -130,7 +130,7 @@ describe('acquireScipAutoLock', () => {
   let tmpDir: string;
 
   beforeEach(() => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-lock-'));
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vbgraph-lock-'));
   });
 
   afterEach(() => {

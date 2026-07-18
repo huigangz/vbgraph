@@ -15,7 +15,7 @@
 import * as path from 'path';
 import * as protobuf from 'protobufjs';
 
-/** The SCIP message types CodeGraph decodes. */
+/** The SCIP message types VBGraph decodes. */
 export interface ScipProtoTypes {
   Index: protobuf.Type;
   Metadata: protobuf.Type;
